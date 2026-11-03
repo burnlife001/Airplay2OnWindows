@@ -136,12 +136,16 @@ namespace AirPlay.Services
             // Low-latency ffplay flags:
             //   -probesize 32768: small probe size (pre-buffered SPS/PPS+IDR makes this sufficient)
             //   -analyzeduration 0: don't wait to analyze stream duration
-            //   -fflags nobuffer+discardcorrupt: no input buffering, discard corrupt frames
             //   -flags low_delay: enable low-delay decoding
             //   -framedrop: drop frames if display can't keep up
             //   -avioflags direct: bypass I/O buffering on pipe reads
             //   -vf setpts=0: zero out PTS so frames display immediately without pacing delay
-            var ffplayArgs = $"-f h264 -probesize 32768 -analyzeduration 0 -fflags nobuffer+discardcorrupt -flags low_delay -framedrop -avioflags direct -vf setpts=0 \"{pipePath}\"";
+            //
+            // NOTE: do NOT pass "-fflags nobuffer". With AVFMT_FLAG_NOBUFFER the h264 parser
+            // never hands packets to the decoder, so no frame is ever decoded, ffplay never
+            // creates/shows its SDL video window (it stays hidden with the default "ffplay"
+            // title) and the mirroring picture never appears.
+            var ffplayArgs = $"-f h264 -probesize 32768 -analyzeduration 0 -flags low_delay -framedrop -avioflags direct -vf setpts=0 \"{pipePath}\"";
 
             try
             {
