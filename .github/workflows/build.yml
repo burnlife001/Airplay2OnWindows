@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ main, master, develop ]
   workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (用于产物命名, 如 releaseV1.0.0.2)'
+        required: false
+        default: 'dev'
 
 jobs:
   build:
@@ -29,7 +34,13 @@ jobs:
       run: dotnet build AirPlay.sln --configuration Release --no-restore
       
     - name: Publish
-      run: dotnet publish AirPlay/AirPlay.csproj --configuration Release --runtime win-x64 --self-contained true --output ./publish/win-x64
+      shell: pwsh
+      run: |
+        $version = "${{ inputs.version }}"
+        if ([string]::IsNullOrWhiteSpace($version)) { $version = 'dev' }
+        dotnet publish AirPlay/AirPlay.csproj --configuration Release --runtime win-x64 --self-contained true --output ./publish/win-x64 -p:InformationalVersion="$version" -p:FileVersion="1.0.0.0" -p:AssemblyVersion="1.0.0.0"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        Set-Content -Path ./publish/win-x64/version.txt -Value $version -Encoding utf8
 
     - name: Cache FFmpeg
       id: cache-ffmpeg
@@ -102,5 +113,5 @@ jobs:
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: AirPlay-win-x64
+        name: AirPlay-win-x64-${{ inputs.version || 'dev' }}
         path: ./publish/win-x64/
