@@ -162,8 +162,8 @@ namespace AirPlay.Listeners
                     // Client request packet remaining 64 bytes of content
                     // 01 00 00 00 -> use 01 as flag to check type of verify
                     // If flag is 1:
-                    // 32 bytes ecdh_their 
-                    // 32 bytes ed_their 
+                    // 32 bytes ecdh_their
+                    // 32 bytes ed_their
                     // If flag is 0:
                     // 64 bytes signature
 
@@ -454,12 +454,24 @@ namespace AirPlay.Listeners
 
                         if (session.FairPlayReady && session.MirroringSessionReady && session.MirroringListener == null)
                         {
-                            // Start 'MirroringListener' (handle H264 data received from iOS/macOS
+                            // Publish ownership before accepting clients so early disconnect cleanup can find this instance.
                             var mirroring = new MirroringListener(_receiver, session.SessionId, _airPlayPort);
-                            await mirroring.StartAsync(cancellationToken).ConfigureAwait(false);
-
                             session.MirroringListener = mirroring;
-                            _receiver.OnMirroringStarted();
+                            await SessionManager.Current.CreateOrUpdateSessionAsync(sessionId, session).ConfigureAwait(false);
+                            try
+                            {
+                                await mirroring.StartAsync(cancellationToken).ConfigureAwait(false);
+                            }
+                            catch
+                            {
+                                await SessionManager.Current.ReleaseMirroringAsync(sessionId, null, "mirroring-start-failed", mirroring).ConfigureAwait(false);
+                                throw;
+                            }
+
+                            if (ReferenceEquals(session.MirroringListener, mirroring))
+                            {
+                                _receiver.OnMirroringStarted();
+                            }
                         }
                         if (session.FairPlayReady && (!session.MirroringSession.HasValue || !session.MirroringSession.Value))
                         {

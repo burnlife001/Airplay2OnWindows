@@ -1,5 +1,6 @@
 using NAudio.Wave;
 using System;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using AirPlay.Utils;
@@ -264,23 +265,40 @@ namespace AirPlay.Services
 
         public void Dispose()
         {
+            var stopwatch = Stopwatch.StartNew();
+            DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "waiting lock", new { thread = Environment.CurrentManagedThreadId });
             lock (_lock)
             {
-                if (_disposed) return;
+                DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "lock acquired", null);
+                if (_disposed)
+                {
+                    DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "already disposed", null);
+                    return;
+                }
                 _disposed = true;
 
                 try
                 {
+                    DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "waveOut.Stop enter", new { hasWaveOut = _waveOut != null });
                     _waveOut?.Stop();
+                    DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "waveOut.Stop exit", null);
+                    DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "waveOut.Dispose enter", null);
                     _waveOut?.Dispose();
+                    DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "waveOut.Dispose exit", null);
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "waveOut cleanup failed", new { error = ex.GetType().Name, message = ex.Message });
+                }
 
+                DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "streamProvider.Clear enter", null);
                 _streamProvider?.Clear();
+                DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "streamProvider.Clear exit", null);
                 _waveOut = null;
                 _streamProvider = null;
 
                 Console.WriteLine($"Audio disposed (played {_sampleCount} packets total)");
+                DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "dispose completed", new { elapsedMs = stopwatch.ElapsedMilliseconds });
             }
         }
     }

@@ -16,14 +16,19 @@ namespace AirPlay.Listeners
 {
     public class BaseTcpListener : BaseListener
     {
+        private static int _nextListenerId;
         private readonly ushort _port;
         private readonly TcpListener _listener;
         private readonly ConcurrentDictionary<string, Task> _connections;
         private readonly bool _rawData = false;
         private readonly CancellationTokenSource _cancellationTokenSource;
+        private Task _acceptTask;
+
+        public int ListenerId { get; }
 
         public BaseTcpListener(ushort port, bool rawData = false)
         {
+            ListenerId = Interlocked.Increment(ref _nextListenerId);
             _port = port;
             _rawData = rawData;
             _listener = new TcpListener(IPAddress.Any, _port);
@@ -34,17 +39,43 @@ namespace AirPlay.Listeners
 
         public override Task StartAsync(CancellationToken cancellationToken)
         {
-            var source = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cancellationTokenSource.Token);
+            try
+            {
+                _listener.Start();
+                DebugSessionLog.Write("H1", "BaseTcpListener.cs:StartAsync", "TcpListener started", new { listenerId = ListenerId, port = _port });
+            }
+            catch (SocketException ex)
+            {
+                DebugSessionLog.Write("H1", "BaseTcpListener.cs:StartAsync", "TcpListener start failed", new { listenerId = ListenerId, port = _port, error = ex.SocketErrorCode.ToString(), message = ex.Message });
+                throw;
+            }
 
-            Task.Run(() => AcceptClientsAsync(source.Token), source.Token);
+            var source = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cancellationTokenSource.Token);
+            _acceptTask = AcceptClientsAsync(source.Token);
             return Task.CompletedTask;
         }
 
-        public override Task StopAsync()
+        public override async Task StopAsync()
         {
-            _cancellationTokenSource.Cancel();
-            try { _listener.Stop(); } catch { }
-            return Task.CompletedTask;
+            DebugSessionLog.Write("H1", "BaseTcpListener.cs:StopAsync", "TcpListener stopping", new { listenerId = ListenerId, port = _port });
+            try
+            {
+                _cancellationTokenSource.Cancel();
+                _listener.Stop();
+            }
+            catch (Exception ex)
+            {
+                DebugSessionLog.Write("H1", "BaseTcpListener.cs:StopAsync", "TcpListener stop failed", new { listenerId = ListenerId, port = _port, error = ex.GetType().Name, message = ex.Message });
+                throw;
+            }
+            finally
+            {
+                if (_acceptTask != null)
+                {
+                    await _acceptTask.ConfigureAwait(false);
+                }
+                DebugSessionLog.Write("H1", "BaseTcpListener.cs:StopAsync", "TcpListener stopped", new { listenerId = ListenerId, port = _port });
+            }
         }
 
         public virtual Task OnDataReceivedAsync(Request request, Response response, CancellationToken cancellationToken)
@@ -61,21 +92,6 @@ namespace AirPlay.Listeners
         {
             try
             {
-                _listener.Start();
-                // #region agent log
-                DebugSessionLog.Write("H1", "BaseTcpListener.cs:AcceptClientsAsync", "TcpListener started", new { port = _port });
-                // #endregion
-            }
-            catch (SocketException ex)
-            {
-                // #region agent log
-                DebugSessionLog.Write("H1", "BaseTcpListener.cs:AcceptClientsAsync", "TcpListener start failed", new { port = _port, error = ex.SocketErrorCode.ToString(), message = ex.Message });
-                // #endregion
-                return;
-            }
-
-            try
-            {
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     var client = await _listener.AcceptTcpClientAsync().ConfigureAwait(false);
@@ -88,13 +104,21 @@ namespace AirPlay.Listeners
                     }
                 }
             }
-            catch (ObjectDisposedException) { }
-            catch (InvalidOperationException) { }
+            catch (ObjectDisposedException ex)
+            {
+                DebugSessionLog.Write("H1", "BaseTcpListener.cs:AcceptClientsAsync", "Accept loop disposed", new { listenerId = ListenerId, port = _port, message = ex.Message });
+            }
+            catch (InvalidOperationException ex)
+            {
+                DebugSessionLog.Write("H1", "BaseTcpListener.cs:AcceptClientsAsync", "Accept loop stopped", new { listenerId = ListenerId, port = _port, message = ex.Message });
+            }
             catch (SocketException ex)
             {
-                // #region agent log
-                DebugSessionLog.Write("H1", "BaseTcpListener.cs:AcceptClientsAsync", "Accept loop socket error", new { port = _port, error = ex.SocketErrorCode.ToString(), message = ex.Message });
-                // #endregion
+                DebugSessionLog.Write("H1", "BaseTcpListener.cs:AcceptClientsAsync", "Accept loop socket error", new { listenerId = ListenerId, port = _port, error = ex.SocketErrorCode.ToString(), message = ex.Message });
+            }
+            finally
+            {
+                DebugSessionLog.Write("H1", "BaseTcpListener.cs:AcceptClientsAsync", "Accept loop exited", new { listenerId = ListenerId, port = _port });
             }
         }
 
@@ -105,7 +129,7 @@ namespace AirPlay.Listeners
                 var remoteEndpoint = client.Client.RemoteEndPoint.ToString();
                 var stream = client.GetStream();
                 // #region agent log
-                DebugSessionLog.Write("H5", "BaseTcpListener.cs:HandleClientAsync", "Client connected", new { port = _port, remote = remoteEndpoint, rawData = _rawData });
+                DebugSessionLog.Write("H5", "BaseTcpListener.cs:HandleClientAsync", "Client connected", new { listenerId = ListenerId, port = _port, remote = remoteEndpoint, rawData = _rawData });
                 // #endregion
                 Console.WriteLine($"Client connected: {remoteEndpoint}");
 
@@ -272,7 +296,7 @@ namespace AirPlay.Listeners
             }
             catch (System.IO.IOException e)
             {
-                // 
+                //
             }
         }
     }

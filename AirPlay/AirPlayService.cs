@@ -283,6 +283,7 @@ namespace AirPlay
 
         private async Task StopAsyncCore()
         {
+            var stopwatch = Stopwatch.StartNew();
             try
             {
                 await _airPlayReceiver.StopListenersAsync().ConfigureAwait(false);
@@ -294,28 +295,35 @@ namespace AirPlay
                 // #endregion
             }
 
+            DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "audio Dispose enter", new { hasAudioOutput = _audioOutput != null });
             _audioOutput?.Dispose();
             _audioOutput = null;
+            DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "audio Dispose exit", new { elapsedMs = stopwatch.ElapsedMilliseconds });
 
+            DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "video Dispose enter", new { hasVideoOutput = _videoOutput != null });
             _videoOutput?.Dispose();
             _videoOutput = null;
+            DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "video Dispose exit", new { elapsedMs = stopwatch.ElapsedMilliseconds });
 
 #if DUMP
             // DUMP WAV AUDIO
             var bPath = _dConfig.Path;
+            DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "DUMP header enter", new { path = bPath, bytes = _audiobuf.Count });
             using (var wr = new FileStream($"{bPath}dequeued.wav", FileMode.Create))
             {
                 var header = Utilities.WriteWavHeader(2, 44100, 16, (uint)_audiobuf.Count);
                 wr.Write(header, 0, header.Length);
             }
+            DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "DUMP header exit", null);
 
             using (FileStream writer = new FileStream($"{bPath}dequeued.wav", FileMode.Append))
             {
                 writer.Write(_audiobuf.ToArray(), 0, _audiobuf.Count);
             }
+            DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "DUMP samples written", new { bytes = _audiobuf.Count, elapsedMs = stopwatch.ElapsedMilliseconds });
 #endif
             // #region agent log
-            DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "exit", null);
+            DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "exit", new { elapsedMs = stopwatch.ElapsedMilliseconds });
             // #endregion
         }
 

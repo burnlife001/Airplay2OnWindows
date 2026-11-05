@@ -245,46 +245,80 @@ namespace AirPlay.Services
 
         private void StopFfplay()
         {
-            if (_ffplayProcess != null)
+            if (_ffplayProcess == null)
             {
-                try
+                DebugSessionLog.Write("H6", "VideoOutputService.StopFfplay", "no ffplay process", null);
+                return;
+            }
+
+            int? pid = null;
+            try
+            {
+                pid = _ffplayProcess.Id;
+                DebugSessionLog.Write("H6", "VideoOutputService.StopFfplay", "HasExited enter", new { pid });
+                var hasExited = _ffplayProcess.HasExited;
+                DebugSessionLog.Write("H6", "VideoOutputService.StopFfplay", "HasExited exit", new { pid, hasExited });
+                if (!hasExited)
                 {
-                    if (!_ffplayProcess.HasExited)
+                    Console.WriteLine($"Stopping ffplay (PID: {pid})...");
+                    DebugSessionLog.Write("H6", "VideoOutputService.StopFfplay", "Kill enter", new { pid });
+                    _ffplayProcess.Kill();
+                    DebugSessionLog.Write("H6", "VideoOutputService.StopFfplay", "Kill exit", new { pid });
+                    var exited = _ffplayProcess.WaitForExit(3000);
+                    DebugSessionLog.Write("H6", "VideoOutputService.StopFfplay", "WaitForExit returned", new { pid, timeoutMs = 3000, exited });
+                    if (!exited)
                     {
-                        Console.WriteLine($"Stopping ffplay (PID: {_ffplayProcess.Id})...");
-                        _ffplayProcess.Kill();
-                        if (!_ffplayProcess.WaitForExit(3000))
-                        {
-                            Console.WriteLine("Warning: ffplay did not exit within timeout");
-                        }
+                        Console.WriteLine("Warning: ffplay did not exit within timeout");
                     }
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Error stopping ffplay: {ex.Message}");
-                }
-                finally
-                {
-                    _ffplayProcess.Dispose();
-                    _ffplayProcess = null;
-                }
+            }
+            catch (Exception ex)
+            {
+                DebugSessionLog.Write("H6", "VideoOutputService.StopFfplay", "ffplay cleanup failed", new { pid, error = ex.GetType().Name, message = ex.Message });
+                Console.WriteLine($"Error stopping ffplay: {ex.Message}");
+            }
+            finally
+            {
+                DebugSessionLog.Write("H6", "VideoOutputService.StopFfplay", "process Dispose enter", new { pid });
+                _ffplayProcess.Dispose();
+                _ffplayProcess = null;
+                DebugSessionLog.Write("H6", "VideoOutputService.StopFfplay", "process Dispose exit", new { pid });
             }
         }
 
         private void CleanupSession()
         {
+            DebugSessionLog.Write("H6", "VideoOutputService.CleanupSession", "enter", new { hasCts = _cts != null, hasPipe = _pipeServer != null, hasFfplay = _ffplayProcess != null });
             _cts?.Cancel();
+            DebugSessionLog.Write("H6", "VideoOutputService.CleanupSession", "cts cancelled", null);
             _cts?.Dispose();
             _cts = null;
+            DebugSessionLog.Write("H6", "VideoOutputService.CleanupSession", "cts disposed", null);
 
             _connected = false;
             _pendingFrames.Clear();
             _hasReceivedKeyFrame = false;
 
-            try { _pipeServer?.Dispose(); } catch { }
+            try
+            {
+                _pipeServer?.Dispose();
+                DebugSessionLog.Write("H6", "VideoOutputService.CleanupSession", "pipe disposed", null);
+            }
+            catch (Exception ex)
+            {
+                DebugSessionLog.Write("H6", "VideoOutputService.CleanupSession", "pipe dispose failed", new { error = ex.GetType().Name, message = ex.Message });
+            }
             _pipeServer = null;
 
-            try { _unixPipeStream?.Dispose(); } catch { }
+            try
+            {
+                _unixPipeStream?.Dispose();
+                DebugSessionLog.Write("H6", "VideoOutputService.CleanupSession", "unix pipe disposed", null);
+            }
+            catch (Exception ex)
+            {
+                DebugSessionLog.Write("H6", "VideoOutputService.CleanupSession", "unix pipe dispose failed", new { error = ex.GetType().Name, message = ex.Message });
+            }
             _unixPipeStream = null;
 
             StopFfplay();
@@ -293,6 +327,7 @@ namespace AirPlay.Services
             {
                 try { File.Delete(UNIX_PIPE_PATH); } catch { }
             }
+            DebugSessionLog.Write("H6", "VideoOutputService.CleanupSession", "exit", null);
         }
 
         private async Task WaitForPipeConnection(CancellationToken token)
@@ -458,14 +493,22 @@ namespace AirPlay.Services
 
         public void Dispose()
         {
+            var stopwatch = Stopwatch.StartNew();
+            DebugSessionLog.Write("H6", "VideoOutputService.Dispose", "waiting lock", new { thread = Environment.CurrentManagedThreadId });
             lock (_lock)
             {
-                if (_disposed) return;
+                DebugSessionLog.Write("H6", "VideoOutputService.Dispose", "lock acquired", null);
+                if (_disposed)
+                {
+                    DebugSessionLog.Write("H6", "VideoOutputService.Dispose", "already disposed", null);
+                    return;
+                }
                 _disposed = true;
 
                 CleanupSession();
 
                 Console.WriteLine("Video output service disposed");
+                DebugSessionLog.Write("H6", "VideoOutputService.Dispose", "dispose completed", new { elapsedMs = stopwatch.ElapsedMilliseconds });
             }
         }
     }

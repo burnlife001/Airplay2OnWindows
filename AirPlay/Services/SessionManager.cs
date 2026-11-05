@@ -59,10 +59,16 @@ namespace AirPlay.Services.Implementations
             onMirroringStopped?.Invoke();
         }
 
-        public async Task ReleaseMirroringAsync(string sessionId, Action onMirroringStopped, string reason)
+        public async Task ReleaseMirroringAsync(string sessionId, Action onMirroringStopped, string reason, BaseTcpListener expectedListener = null)
         {
             var session = await GetSessionAsync(sessionId);
             var listener = session.MirroringListener;
+            if (expectedListener != null && !ReferenceEquals(listener, expectedListener))
+            {
+                DebugSessionLog.Write("H7", "SessionManager.ReleaseMirroringAsync", "stopping stale listener without clearing current session", new { sessionId, reason, staleListenerId = expectedListener.ListenerId, currentListenerId = listener?.ListenerId });
+                await expectedListener.StopAsync().ConfigureAwait(false);
+                return;
+            }
             if (listener == null && session.StreamConnectionId == null)
             {
                 return;
@@ -75,7 +81,7 @@ namespace AirPlay.Services.Implementations
             await CreateOrUpdateSessionAsync(sessionId, session);
 
             // #region agent log
-            DebugSessionLog.Write("H7", "SessionManager.ReleaseMirroringAsync", "releasing mirroring", new { sessionId, reason, hadListener = listener != null });
+            DebugSessionLog.Write("H7", "SessionManager.ReleaseMirroringAsync", "releasing mirroring", new { sessionId, reason, listenerId = listener?.ListenerId, hadListener = listener != null });
             // #endregion
 
             if (listener != null)
@@ -87,12 +93,13 @@ namespace AirPlay.Services.Implementations
                 catch (Exception ex)
                 {
                     // #region agent log
-                    DebugSessionLog.Write("H7", "SessionManager.ReleaseMirroringAsync", "listener StopAsync failed", new { message = ex.Message });
+                    DebugSessionLog.Write("H7", "SessionManager.ReleaseMirroringAsync", "listener StopAsync failed", new { sessionId, listenerId = listener.ListenerId, error = ex.GetType().Name, message = ex.Message });
                     // #endregion
                 }
             }
 
             onMirroringStopped?.Invoke();
+            DebugSessionLog.Write("H7", "SessionManager.ReleaseMirroringAsync", "mirroring released", new { sessionId, reason, listenerId = listener?.ListenerId });
         }
 
         public async Task ReleaseAllMirroringAsync(Action onMirroringStopped, string reason)
