@@ -18,6 +18,7 @@ namespace AirPlay
     {
         public static IConfigurationRoot Configuration;
 
+        [STAThread]
         public static async Task Main(string[] args)
         {
             // DUMP WAV AUDIO
@@ -34,7 +35,26 @@ namespace AirPlay
             //    _writer.Write(_audiobuf.ToArray(), 0, _audiobuf.Count);
             //}
 
-            var builder = new HostBuilder()
+            var builder = CreateHostBuilder(args);
+
+#if USE_WINDOWS_TRAY
+            if (OperatingSystem.IsWindows())
+            {
+                await WindowsTrayHost.RunAsync(async cancellationToken =>
+                {
+                    using var host = builder.Build();
+                    await host.RunAsync(cancellationToken).ConfigureAwait(false);
+                }).ConfigureAwait(false);
+                return;
+            }
+#endif
+
+            await builder.RunConsoleAsync().ConfigureAwait(false);
+        }
+
+        private static IHostBuilder CreateHostBuilder(string[] args)
+        {
+            return new HostBuilder()
                 .ConfigureAppConfiguration((hostingContext, config) =>
                 {
                     config.SetBasePath(Directory.GetCurrentDirectory());
@@ -72,8 +92,6 @@ namespace AirPlay
                     logging.AddConfiguration(hostContext.Configuration.GetSection("Logging"));
                     logging.AddConsole();
                 });
-
-            await builder.RunConsoleAsync();
         }
     }
 }

@@ -4,6 +4,7 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
     <RollForward>LatestMajor</RollForward>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <NoWarn>$(NoWarn);SYSLIB0011;SYSLIB0050</NoWarn>
     <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
   </PropertyGroup>
@@ -16,6 +17,12 @@
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    <DefineConstants>$(DefineConstants);USE_WINDOWS_TRAY</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="curve25519-pcl" Version="1.0.1" />
     <PackageReference Include="LibALAC" Version="1.0.7" />
