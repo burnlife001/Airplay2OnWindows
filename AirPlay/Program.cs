@@ -37,6 +37,10 @@ namespace AirPlay
 
             var builder = CreateHostBuilder(args);
 
+            // #region agent log
+            DebugSessionLog.Write("H4", "Program.cs:Main", "Process starting", new { cwd = Directory.GetCurrentDirectory(), args = args ?? Array.Empty<string>() });
+            // #endregion
+
 #if USE_WINDOWS_TRAY
             if (OperatingSystem.IsWindows())
             {

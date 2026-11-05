@@ -10,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using AirPlay.Models;
 using AirPlay.Models.Enums;
+using AirPlay.Utils;
 
 namespace AirPlay.Listeners
 {
@@ -58,7 +59,20 @@ namespace AirPlay.Listeners
 
         private async Task AcceptClientsAsync(CancellationToken cancellationToken)
         {
-            _listener.Start();
+            try
+            {
+                _listener.Start();
+                // #region agent log
+                DebugSessionLog.Write("H1", "BaseTcpListener.cs:AcceptClientsAsync", "TcpListener started", new { port = _port });
+                // #endregion
+            }
+            catch (SocketException ex)
+            {
+                // #region agent log
+                DebugSessionLog.Write("H1", "BaseTcpListener.cs:AcceptClientsAsync", "TcpListener start failed", new { port = _port, error = ex.SocketErrorCode.ToString(), message = ex.Message });
+                // #endregion
+                return;
+            }
 
             try
             {
@@ -76,7 +90,12 @@ namespace AirPlay.Listeners
             }
             catch (ObjectDisposedException) { }
             catch (InvalidOperationException) { }
-            catch (System.Net.Sockets.SocketException) { }
+            catch (SocketException ex)
+            {
+                // #region agent log
+                DebugSessionLog.Write("H1", "BaseTcpListener.cs:AcceptClientsAsync", "Accept loop socket error", new { port = _port, error = ex.SocketErrorCode.ToString(), message = ex.Message });
+                // #endregion
+            }
         }
 
         private async Task HandleClientAsync(TcpClient client, CancellationToken cancellationToken)
@@ -85,6 +104,9 @@ namespace AirPlay.Listeners
             {
                 var remoteEndpoint = client.Client.RemoteEndPoint.ToString();
                 var stream = client.GetStream();
+                // #region agent log
+                DebugSessionLog.Write("H5", "BaseTcpListener.cs:HandleClientAsync", "Client connected", new { port = _port, remote = remoteEndpoint, rawData = _rawData });
+                // #endregion
                 Console.WriteLine($"Client connected: {remoteEndpoint}");
 
                 if (_rawData)

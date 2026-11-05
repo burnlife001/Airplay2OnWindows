@@ -55,6 +55,11 @@ namespace AirPlay
 
         public async Task StartAsync(CancellationToken cancellationToken)
         {
+            // #region agent log
+            DebugSessionLog.Write("H3", "AirPlayService.cs:StartAsync", "StartAsync begin", null);
+            // #endregion
+            try
+            {
 #if DUMP
             var bPath = _dConfig.Path;
             var fPath = Path.Combine(bPath, "frames/");
@@ -101,7 +106,20 @@ namespace AirPlay
             Console.WriteLine("Video output service ready (will auto-launch ffplay when mirroring starts)");
 
             await _airPlayReceiver.StartListeners(cancellationToken);
+            // #region agent log
+            DebugSessionLog.Write("H3", "AirPlayService.cs:StartAsync", "StartListeners completed", null);
+            // #endregion
             await _airPlayReceiver.StartMdnsAsync().ConfigureAwait(false);
+            // #region agent log
+            DebugSessionLog.Write("H3", "AirPlayService.cs:StartAsync", "StartMdnsAsync completed", null);
+            // #endregion
+
+#if USE_WINDOWS_TRAY
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                TrayStartupNotifier.ShowReady();
+            }
+#endif
 
             _airPlayReceiver.OnSetVolumeReceived += (s, e) =>
             {
@@ -181,6 +199,20 @@ namespace AirPlay
                 _audiobuf.AddRange(e.Data);
 #endif
             };
+            }
+            catch (Exception ex)
+            {
+                // #region agent log
+                DebugSessionLog.Write("H3", "AirPlayService.cs:StartAsync", "StartAsync failed", new { type = ex.GetType().Name, message = ex.Message, stack = ex.StackTrace });
+                // #endregion
+#if USE_WINDOWS_TRAY
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    TrayStartupNotifier.ShowError($"启动失败：{ex.Message}");
+                }
+#endif
+                throw;
+            }
         }
 
         public Task StopAsync(CancellationToken cancellationToken)

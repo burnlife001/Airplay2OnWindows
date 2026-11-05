@@ -14,6 +14,7 @@ using AirPlay.Models.Configs;
 using AirPlay.Models.Enums;
 using AirPlay.Services.Implementations;
 using AirPlay.Utils;
+using AirPlay.Utils;
 using org.whispersystems.curve25519;
 
 namespace AirPlay.Listeners
@@ -54,6 +55,15 @@ namespace AirPlay.Listeners
 
         public override async Task OnDataReceivedAsync(Request request, Response response, CancellationToken cancellationToken)
         {
+            // #region agent log
+            DebugSessionLog.Write("H5", "AirTunesListener.cs:OnDataReceivedAsync", "RTSP/HTTP request", new
+            {
+                port = _airTunesPort,
+                type = request.Type.ToString(),
+                path = request.Path,
+                hasActiveRemote = request.Headers.ContainsKey("Active-Remote"),
+            });
+            // #endregion
             // Get session by active-remote header value
             var sessionId = request.Headers["Active-Remote"];
             var session = await SessionManager.Current.GetSessionAsync(sessionId);

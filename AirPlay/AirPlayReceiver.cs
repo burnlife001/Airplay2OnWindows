@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using AirPlay.Listeners;
 using AirPlay.Models;
 using AirPlay.Models.Configs;
+using AirPlay.Utils;
 using Makaretu.Dns;
 using Microsoft.Extensions.Options;
 
@@ -65,7 +66,22 @@ namespace AirPlay
 
             var deviceIdInstance = string.Join(string.Empty, mDeviceId.Groups[2].Captures) + mDeviceId.Groups[3].Value;
 
-            _mdns = new MulticastService();
+            var ipList = MulticastService.GetIPAddresses().Select(ip => ip.ToString()).ToList();
+            // #region agent log
+            DebugSessionLog.Write("H2", "AirPlayReceiver.cs:StartMdnsAsync", "Preparing mDNS advertise", new
+            {
+                instance = _instance,
+                deviceId = _deviceId,
+                airTunesPort = _airTunesPort,
+                airPlayPort = _airPlayPort,
+                ips = ipList,
+            });
+            // #endregion
+
+            _mdns = new MulticastService
+            {
+                UseIpv6 = false,
+            };
             var sd = new ServiceDiscovery(_mdns);
 
             foreach (var ip in MulticastService.GetIPAddresses())
@@ -125,6 +141,16 @@ namespace AirPlay
             sd.Advertise(airPlay);
 
             _mdns.Start();
+
+            // #region agent log
+            DebugSessionLog.Write("H2", "AirPlayReceiver.cs:StartMdnsAsync", "mDNS started and services advertised", new
+            {
+                raopName = $"{deviceIdInstance}@{_instance}",
+                airPlayName = _instance,
+                useIpv6 = false,
+                primaryLanHint = ipList.FirstOrDefault(ip => ip.StartsWith("192.168.", StringComparison.Ordinal) || ip.StartsWith("10.", StringComparison.Ordinal)),
+            });
+            // #endregion
 
             return Task.CompletedTask;
         }

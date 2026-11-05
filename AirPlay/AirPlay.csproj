@@ -8,6 +8,9 @@
     <NoWarn>$(NoWarn);SYSLIB0011;SYSLIB0050</NoWarn>
     <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
   </PropertyGroup>
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    <ApplicationIcon>Resources\airplay.ico</ApplicationIcon>
+  </PropertyGroup>
 
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -84,6 +87,8 @@
     </None>
   </ItemGroup>
   <ItemGroup>
+    <None Include="Resources\tv_airplay_line.svg" />
+    <EmbeddedResource Include="Resources\airplay.ico" />
     <EmbeddedResource Include="Resources\table_s1.bin" />
     <EmbeddedResource Include="Resources\table_s10.bin" />
     <EmbeddedResource Include="Resources\table_s2.bin" />
