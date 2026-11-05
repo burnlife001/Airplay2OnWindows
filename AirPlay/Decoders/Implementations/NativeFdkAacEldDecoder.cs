@@ -17,6 +17,7 @@
 using System;
 using System.Runtime.InteropServices;
 using AirPlay.Models.Enums;
+using AirPlay.Utils;
 
 namespace AirPlay.Decoders.Implementations
 {
@@ -42,16 +43,16 @@ namespace AirPlay.Decoders.Implementations
         {
             _pcmPktSize = frameLength * channels * (bitDepth / 8);
 
-            Console.WriteLine($"[DEBUG-FDK] Config called: sampleRate={sampleRate}, channels={channels}, bitDepth={bitDepth}, frameLength={frameLength}, pcmOutputSize={_pcmPktSize}");
+            DebugSessionLog.WriteLine($"[DEBUG-FDK] Config called: sampleRate={sampleRate}, channels={channels}, bitDepth={bitDepth}, frameLength={frameLength}, pcmOutputSize={_pcmPktSize}");
 
             // Open FDK-AAC decoder with TT_MP4_RAW transport (raw access units)
             _decoder = aacDecoder_Open(TT_MP4_RAW, 1);
             if (_decoder == IntPtr.Zero)
             {
-                Console.WriteLine("[DEBUG-FDK] aacDecoder_Open returned null - library loaded but Open failed");
+                DebugSessionLog.WriteLine("[DEBUG-FDK] aacDecoder_Open returned null - library loaded but Open failed");
                 return -1;
             }
-            Console.WriteLine($"[DEBUG-FDK] aacDecoder_Open succeeded: handle=0x{_decoder:X}");
+            DebugSessionLog.WriteLine($"[DEBUG-FDK] aacDecoder_Open succeeded: handle=0x{_decoder:X}");
 
             // Build AudioSpecificConfig for AAC-ELD
             // Uses exact same format as itskenny0/airplayreceiver and UxPlay: f8e85000
@@ -61,13 +62,13 @@ namespace AirPlay.Decoders.Implementations
             int ret = ConfigRaw(asc);
             if (ret != 0)
             {
-                Console.WriteLine($"[DEBUG-FDK] aacDecoder_ConfigRaw FAILED: error=0x{ret:X} ({(AACDecoderError)ret})");
+                DebugSessionLog.WriteLine($"[DEBUG-FDK] aacDecoder_ConfigRaw FAILED: error=0x{ret:X} ({(AACDecoderError)ret})");
                 aacDecoder_Close(_decoder);
                 _decoder = IntPtr.Zero;
                 return ret;
             }
 
-            Console.WriteLine($"[DEBUG-FDK] Decoder configured successfully: {sampleRate}Hz, {channels}ch, {bitDepth}bit, frameLength={frameLength}, pcmSize={_pcmPktSize}");
+            DebugSessionLog.WriteLine($"[DEBUG-FDK] Decoder configured successfully: {sampleRate}Hz, {channels}ch, {bitDepth}bit, frameLength={frameLength}, pcmSize={_pcmPktSize}");
             return 0;
         }
 
@@ -82,7 +83,7 @@ namespace AirPlay.Decoders.Implementations
             {
                 _decodeCallCount++;
                 if (_decodeCallCount <= 3)
-                    Console.WriteLine("[DEBUG-FDK] DecodeFrame called but decoder is null");
+                    DebugSessionLog.WriteLine("[DEBUG-FDK] DecodeFrame called but decoder is null");
                 return -1;
             }
 
@@ -96,7 +97,7 @@ namespace AirPlay.Decoders.Implementations
                 var hexDump = input.Length >= 16
                     ? BitConverter.ToString(input, 0, Math.Min(16, input.Length))
                     : BitConverter.ToString(input);
-                Console.WriteLine($"[DEBUG-FDK] DecodeFrame #{_decodeCallCount}: inputLen={input.Length}, first16={hexDump}");
+                DebugSessionLog.WriteLine($"[DEBUG-FDK] DecodeFrame #{_decodeCallCount}: inputLen={input.Length}, first16={hexDump}");
             }
 
             int ret;
@@ -107,7 +108,7 @@ namespace AirPlay.Decoders.Implementations
             {
                 _fillErrorCount++;
                 if (_fillErrorCount <= 5 || _fillErrorCount % 200 == 0)
-                    Console.WriteLine($"[DEBUG-FDK] aacDecoder_Fill error #{_fillErrorCount}: 0x{ret:X} ({(AACDecoderError)ret}), inputLen={input.Length}");
+                    DebugSessionLog.WriteLine($"[DEBUG-FDK] aacDecoder_Fill error #{_fillErrorCount}: 0x{ret:X} ({(AACDecoderError)ret}), inputLen={input.Length}");
                 return ret;
             }
 
@@ -117,7 +118,7 @@ namespace AirPlay.Decoders.Implementations
             {
                 _decodeErrorCount++;
                 if (_decodeErrorCount <= 5 || _decodeErrorCount % 200 == 0)
-                    Console.WriteLine($"[DEBUG-FDK] aacDecoder_DecodeFrame error #{_decodeErrorCount}: 0x{ret:X} ({(AACDecoderError)ret}), pcmSize={pcm_pkt_size}");
+                    DebugSessionLog.WriteLine($"[DEBUG-FDK] aacDecoder_DecodeFrame error #{_decodeErrorCount}: 0x{ret:X} ({(AACDecoderError)ret}), pcmSize={pcm_pkt_size}");
                 return ret;
             }
 
@@ -130,7 +131,7 @@ namespace AirPlay.Decoders.Implementations
                 {
                     if (output[i] != 0) { isSilence = false; break; }
                 }
-                Console.WriteLine($"[DEBUG-FDK] Decode SUCCESS #{_successCount}: outputLen={pcm_pkt_size}, isSilence={isSilence}, totalErrors(fill={_fillErrorCount},decode={_decodeErrorCount})");
+                DebugSessionLog.WriteLine($"[DEBUG-FDK] Decode SUCCESS #{_successCount}: outputLen={pcm_pkt_size}, isSilence={isSilence}, totalErrors(fill={_fillErrorCount},decode={_decodeErrorCount})");
             }
 
             return 0;
@@ -151,7 +152,7 @@ namespace AirPlay.Decoders.Implementations
 
                 int ret = (int)aacDecoder_Fill(_decoder, pBufferPtr, &bufferSize, &bytesValid);
                 if (ret == 0 && _decodeCallCount <= 5)
-                    Console.WriteLine($"[DEBUG-FDK] Fill OK: bufferSize={pBuffer.Length}, bytesValid after={bytesValid}");
+                    DebugSessionLog.WriteLine($"[DEBUG-FDK] Fill OK: bufferSize={pBuffer.Length}, bytesValid after={bytesValid}");
                 return ret;
             }
             finally
@@ -233,7 +234,7 @@ namespace AirPlay.Decoders.Implementations
                 bytes[i] = Convert.ToByte(bin.Substring(8 * i, 8), 2);
             }
 
-            Console.WriteLine($"[DEBUG-FDK] AudioSpecificConfig: {BitConverter.ToString(bytes)} (AOT={audioObjectType}, freq={sampleRate}[idx={frequencyIndex}], ch={channels}, bitDepth={bitDepth}, frameLen={frameLength})");
+            DebugSessionLog.WriteLine($"[DEBUG-FDK] AudioSpecificConfig: {BitConverter.ToString(bytes)} (AOT={audioObjectType}, freq={sampleRate}[idx={frequencyIndex}], ch={channels}, bitDepth={bitDepth}, frameLen={frameLength})");
             return bytes;
         }
 
@@ -253,7 +254,7 @@ namespace AirPlay.Decoders.Implementations
             if (!_disposed && _decoder != IntPtr.Zero)
             {
                 _disposed = true;
-                Console.WriteLine($"[DEBUG-FDK] Disposing decoder: totalCalls={_decodeCallCount}, successes={_successCount}, fillErrors={_fillErrorCount}, decodeErrors={_decodeErrorCount}");
+                DebugSessionLog.WriteLine($"[DEBUG-FDK] Disposing decoder: totalCalls={_decodeCallCount}, successes={_successCount}, fillErrors={_fillErrorCount}, decodeErrors={_decodeErrorCount}");
                 aacDecoder_Close(_decoder);
                 _decoder = IntPtr.Zero;
             }

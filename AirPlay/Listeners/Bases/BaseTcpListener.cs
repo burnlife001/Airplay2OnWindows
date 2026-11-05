@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
@@ -135,6 +135,13 @@ namespace AirPlay.Listeners
 
         private async Task ReadFormattedAsync(TcpClient client, NetworkStream stream, CancellationToken cancellationToken)
         {
+#if DEBUG
+            var depth = Interlocked.Increment(ref DebugSessionLog.RtspDepth);
+            try
+            {
+            if (depth == 30 || depth == 100 || depth == 500)
+                DebugSessionLog.Write("H3", "BaseTcpListener.cs:ReadFormattedAsync", "RTSP recursion depth", new { depth, port = _port });
+#endif
             if (client.Connected && stream.CanRead)
             {
                 int retBytes = 0;
@@ -184,7 +191,7 @@ namespace AirPlay.Listeners
                     {
                         // Log first 200 chars of unrecognized data for debugging
                         var preview = raw.Length > 200 ? raw.Substring(0, 200) : raw;
-                        Console.WriteLine($"[DEBUG-RTSP] Unrecognized data (no regex match), len={raw.Length}, preview: {preview}");
+                        DebugSessionLog.WriteLine($"[DEBUG-RTSP] Unrecognized data (no regex match), len={raw.Length}, preview: {preview}");
                     }
 
                     // Split requests and create models
@@ -210,12 +217,12 @@ namespace AirPlay.Listeners
                         var response = request.GetBaseResponse();
 
                         var cseq = request.Headers.ContainsKey("CSeq") ? request.Headers["CSeq"] : "?";
-                        Console.WriteLine($"[DEBUG-RTSP] >>> {request.Type} CSeq={cseq}");
+                        DebugSessionLog.WriteLine($"[DEBUG-RTSP] >>> {request.Type} CSeq={cseq}");
 
                         await OnDataReceivedAsync(request, response, cancellationToken).ConfigureAwait(false);
                         await SendResponseAsync(stream, response);
 
-                        Console.WriteLine($"[DEBUG-RTSP] <<< {response.StatusCode}");                    }
+                        DebugSessionLog.WriteLine($"[DEBUG-RTSP] <<< {response.StatusCode}");                    }
                 }
 
                 // If we have read some bytes, leave connection open and wait for next message
@@ -224,6 +231,13 @@ namespace AirPlay.Listeners
                     await ReadFormattedAsync(client, stream, cancellationToken);
                 }
             }
+#if DEBUG
+            }
+            finally
+            {
+                Interlocked.Decrement(ref DebugSessionLog.RtspDepth);
+            }
+#endif
         }
 
         private async Task SendResponseAsync(NetworkStream stream, Response response)

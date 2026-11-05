@@ -47,8 +47,49 @@ namespace AirPlay
                 await WindowsTrayHost.RunAsync(async cancellationToken =>
                 {
                     using var host = builder.Build();
-                    await host.RunAsync(cancellationToken).ConfigureAwait(false);
+                    // #region agent log
+                    DebugSessionLog.Write("H6", "Program.cs:host", "RunAsync begin", new { cancelled = cancellationToken.IsCancellationRequested });
+                    // #endregion
+                    try
+                    {
+                        await host.StartAsync(cancellationToken).ConfigureAwait(false);
+                        await host.WaitForShutdownAsync(cancellationToken).ConfigureAwait(false);
+                        // #region agent log
+                        DebugSessionLog.Write("H6", "Program.cs:host", "WaitForShutdownAsync returned", null, runId: "post-fix");
+                        // #endregion
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // #region agent log
+                        DebugSessionLog.Write("H6", "Program.cs:host", "host cancelled", null, runId: "post-fix");
+                        // #endregion
+                    }
+                    catch (Exception ex)
+                    {
+                        // #region agent log
+                        DebugSessionLog.Write("H6", "Program.cs:host", "host faulted", new { type = ex.GetType().Name, message = ex.Message });
+                        // #endregion
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            await host.StopAsync(CancellationToken.None).ConfigureAwait(false);
+                            // #region agent log
+                            DebugSessionLog.Write("H6", "Program.cs:host", "StopAsync completed", null, runId: "post-fix");
+                            // #endregion
+                        }
+                        catch (Exception ex)
+                        {
+                            // #region agent log
+                            DebugSessionLog.Write("H6", "Program.cs:host", "StopAsync failed", new { type = ex.GetType().Name, message = ex.Message });
+                            // #endregion
+                        }
+                    }
                 }).ConfigureAwait(false);
+                // #region agent log
+                DebugSessionLog.Write("H6", "Program.cs:Main", "tray host finished, exiting process", null, runId: "post-fix");
+                // #endregion
                 return;
             }
 #endif

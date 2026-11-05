@@ -50,6 +50,22 @@ namespace AirPlay
             await _airTunesListener.StartAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        public async Task StopListenersAsync()
+        {
+            // #region agent log
+            DebugSessionLog.Write("H6", "AirPlayReceiver.StopListenersAsync", "enter", new { hasListener = _airTunesListener != null, hasMdns = _mdns != null });
+            // #endregion
+            if (_airTunesListener != null)
+            {
+                await _airTunesListener.StopAsync().ConfigureAwait(false);
+            }
+
+            _mdns?.Stop();
+            // #region agent log
+            DebugSessionLog.Write("H6", "AirPlayReceiver.StopListenersAsync", "exit", null);
+            // #endregion
+        }
+
         public Task StartMdnsAsync()
         {
             if (string.IsNullOrWhiteSpace(_deviceId))
@@ -91,10 +107,19 @@ namespace AirPlay
 
             _mdns.NetworkInterfaceDiscovered += (s, e) =>
             {
+#if DEBUG
+                var n = Interlocked.Increment(ref DebugSessionLog.NicEvents);
+                var names = e.NetworkInterfaces.Select(nic => nic.Name).ToArray();
+                if (n <= 3 || n % 20 == 0)
+                {
+                    DebugSessionLog.Write("H4", "AirPlayReceiver.cs:NetworkInterfaceDiscovered", "NIC event", new { n, names });
+                }
+
                 foreach (var nic in e.NetworkInterfaces)
                 {
-                    Console.WriteLine($"NIC '{nic.Name}'");
+                    DebugSessionLog.WriteLine($"NIC '{nic.Name}'");
                 }
+#endif
             };
 
             // Internally 'ServiceProfile' create the SRV record
@@ -187,7 +212,13 @@ namespace AirPlay
 
         public void Dispose()
         {
+            // #region agent log
+            DebugSessionLog.Write("H6", "AirPlayReceiver.Dispose", "before mDNS stop", new { hasMdns = _mdns != null, thread = Environment.CurrentManagedThreadId });
+            // #endregion
             _mdns?.Stop();
+            // #region agent log
+            DebugSessionLog.Write("H6", "AirPlayReceiver.Dispose", "after mDNS stop", null);
+            // #endregion
         }
     }
 }

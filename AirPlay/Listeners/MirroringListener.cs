@@ -151,6 +151,18 @@ namespace AirPlay.Listeners
 
             exit_loop:
             Console.WriteLine($"Closing mirroring connection..");
+            await SessionManager.Current.ClearMirroringStateAsync(
+                _sessionId,
+                _receiver.OnMirroringStopped,
+                "mirroring-tcp-closed").ConfigureAwait(false);
+            try
+            {
+                await StopAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error stopping mirroring listener: {ex.Message}");
+            }
         }
 
         private void DecryptVideoData(byte[] videoData, out byte[] output)

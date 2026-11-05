@@ -1,10 +1,12 @@
-﻿using AirPlay.Models.Configs;
+using AirPlay.Models.Configs;
 using AirPlay.Services;
+using AirPlay.Services.Implementations;
 using AirPlay.Utils;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -27,6 +29,18 @@ namespace AirPlay
         {
             _airPlayReceiver = airPlayReceiver ?? throw new ArgumentNullException(nameof(airPlayReceiver));
             _dConfig = dConfig?.Value ?? throw new ArgumentNullException(nameof(dConfig));
+        }
+
+        private async Task HandleFfplayExitedAsync()
+        {
+            if (_airPlayReceiver is not AirPlayReceiver receiver)
+            {
+                return;
+            }
+
+            await SessionManager.Current.ReleaseAllMirroringAsync(
+                receiver.OnMirroringStopped,
+                "ffplay-exited").ConfigureAwait(false);
         }
 
         private void RecreateAudioOutput()
@@ -103,16 +117,60 @@ namespace AirPlay
 
             // Initialize video output service (will be started/stopped per mirroring session)
             _videoOutput = new VideoOutputService();
+            _videoOutput.FfplayExited += (_, _) => _ = HandleFfplayExitedAsync();
             Console.WriteLine("Video output service ready (will auto-launch ffplay when mirroring starts)");
 
             await _airPlayReceiver.StartListeners(cancellationToken);
             // #region agent log
             DebugSessionLog.Write("H3", "AirPlayService.cs:StartAsync", "StartListeners completed", null);
             // #endregion
-            await _airPlayReceiver.StartMdnsAsync().ConfigureAwait(false);
-            // #region agent log
-            DebugSessionLog.Write("H3", "AirPlayService.cs:StartAsync", "StartMdnsAsync completed", null);
-            // #endregion
+                    await _airPlayReceiver.StartMdnsAsync().ConfigureAwait(false);
+                    // #region agent log
+                    DebugSessionLog.Write("H3", "AirPlayService.cs:StartAsync", "StartMdnsAsync completed", null);
+                    // #endregion
+                    // #region agent log
+#if DEBUG
+                    _ = Task.Run(async () =>
+                    {
+                        var proc = Process.GetCurrentProcess();
+                        var lastCpu = proc.TotalProcessorTime;
+                        var lastWall = DateTime.UtcNow;
+                        while (!cancellationToken.IsCancellationRequested)
+                        {
+                            try
+                            {
+                                await Task.Delay(5000, cancellationToken).ConfigureAwait(false);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                break;
+                            }
+
+                            proc.Refresh();
+                            var nowCpu = proc.TotalProcessorTime;
+                            var nowWall = DateTime.UtcNow;
+                            var wallMs = (nowWall - lastWall).TotalMilliseconds;
+                            var cpuPct = wallMs > 0 ? (nowCpu - lastCpu).TotalMilliseconds / wallMs * 100.0 : 0;
+                            lastCpu = nowCpu;
+                            lastWall = nowWall;
+                            DebugSessionLog.Write("H1", "AirPlayService.heartbeat", "process sample", new
+                            {
+                                cpuPct = Math.Round(cpuPct, 1),
+                                wsMb = proc.WorkingSet64 / (1024 * 1024),
+                                threads = proc.Threads.Count,
+                                cZero = DebugSessionLog.CZeroReads,
+                                cErr = DebugSessionLog.CErrors,
+                                cPkt = DebugSessionLog.CPackets,
+                                dZero = DebugSessionLog.DZeroReads,
+                                dErr = DebugSessionLog.DErrors,
+                                dPkt = DebugSessionLog.DPackets,
+                                rtspDepth = DebugSessionLog.RtspDepth,
+                                nicEvents = DebugSessionLog.NicEvents,
+                            });
+                        }
+                    }, cancellationToken);
+#endif
+                    // #endregion
 
 #if USE_WINDOWS_TRAY
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
@@ -186,7 +244,7 @@ namespace AirPlay
                     {
                         if (e.Data[i] != 0) { allZeros = false; break; }
                     }
-                    Console.WriteLine($"[DEBUG-PCM] OnPCMDataReceived #{pcmReceivedCount}: len={e.Length}, allZeros={allZeros}");
+                    DebugSessionLog.WriteLine($"[DEBUG-PCM] OnPCMDataReceived #{pcmReceivedCount}: len={e.Length}, allZeros={allZeros}");
                 }
 
                 // Play audio through speakers
@@ -217,6 +275,25 @@ namespace AirPlay
 
         public Task StopAsync(CancellationToken cancellationToken)
         {
+            // #region agent log
+            DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "enter", new { thread = Environment.CurrentManagedThreadId });
+            // #endregion
+            return StopAsyncCore();
+        }
+
+        private async Task StopAsyncCore()
+        {
+            try
+            {
+                await _airPlayReceiver.StopListenersAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                // #region agent log
+                DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "StopListenersAsync failed", new { type = ex.GetType().Name, message = ex.Message });
+                // #endregion
+            }
+
             _audioOutput?.Dispose();
             _audioOutput = null;
 
@@ -237,7 +314,9 @@ namespace AirPlay
                 writer.Write(_audiobuf.ToArray(), 0, _audiobuf.Count);
             }
 #endif
-            return Task.CompletedTask;
+            // #region agent log
+            DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "exit", null);
+            // #endregion
         }
 
         public void Dispose()

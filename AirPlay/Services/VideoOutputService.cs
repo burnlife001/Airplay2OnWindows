@@ -8,6 +8,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using AirPlay.Models;
+using AirPlay.Utils;
 
 namespace AirPlay.Services
 {
@@ -34,6 +35,9 @@ namespace AirPlay.Services
         private bool _hasReceivedKeyFrame = false;
 
         public event EventHandler<string> OnStatusChanged;
+        public event EventHandler FfplayExited;
+
+        private bool _ffplayExitHandled;
 
         /// <summary>
         /// Start a new mirroring session: create the pipe, launch ffplay, and wait for connection.
@@ -168,6 +172,9 @@ namespace AirPlay.Services
                 _ffplayProcess = Process.Start(psi);
                 if (_ffplayProcess != null)
                 {
+                    _ffplayExitHandled = false;
+                    _ffplayProcess.EnableRaisingEvents = true;
+                    _ffplayProcess.Exited += OnFfplayProcessExited;
                     Console.WriteLine($"ffplay launched (PID: {_ffplayProcess.Id})");
                 }
             }
@@ -213,6 +220,27 @@ namespace AirPlay.Services
             catch { }
 
             return null;
+        }
+
+        private void OnFfplayProcessExited(object? sender, EventArgs e)
+        {
+            EventHandler? notify;
+            lock (_lock)
+            {
+                if (_disposed || _ffplayExitHandled)
+                {
+                    return;
+                }
+
+                _ffplayExitHandled = true;
+                // #region agent log
+                DebugSessionLog.Write("H7", "VideoOutputService.OnFfplayProcessExited", "ffplay process exited", new { frameCount = _frameCount });
+                // #endregion
+                CleanupSession();
+                notify = FfplayExited;
+            }
+
+            notify?.Invoke(this, EventArgs.Empty);
         }
 
         private void StopFfplay()

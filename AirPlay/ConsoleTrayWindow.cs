@@ -1,6 +1,7 @@
 #if USE_WINDOWS_TRAY
 
 using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -10,12 +11,8 @@ namespace AirPlay
 {
     internal static class ConsoleTrayWindow
     {
-        private const int GwlWndproc = -4;
-        private const uint WmClose = 0x0010;
-        private const uint WmSize = 0x0005;
-        private const uint WmSysCommand = 0x0112;
-        private const int ScMinimize = 0xF020;
-        private const int SizeMinimized = 1;
+        private const uint EventSystemMinimizeStart = 0x0016;
+        private const uint WineventOutofcontext = 0;
         private const int SwHide = 0;
         private const int SwRestore = 9;
         private const int WmSetIcon = 0x0080;
@@ -29,12 +26,28 @@ namespace AirPlay
 
         private static Icon? _iconSmall;
         private static Icon? _iconLarge;
-        private static WndProc? _wndProc;
         private static ConsoleCtrlHandlerDelegate? _consoleCtrlHandler;
+        private static WinEventProc? _winEventCallback;
+        private static IntPtr _minimizeHook;
+        private static IntPtr _trackedConsoleHwnd;
+        private static bool _skipLegacyWindowHooks;
+        private static Action? _requestExit;
 
-        private delegate IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+        public static void BindRequestExit(Action requestExit)
+        {
+            _requestExit = requestExit;
+        }
 
         private delegate bool ConsoleCtrlHandlerDelegate(CtrlTypes ctrlType);
+
+        private delegate void WinEventProc(
+            IntPtr hWinEventHook,
+            uint eventType,
+            IntPtr hwnd,
+            int idObject,
+            int idChild,
+            uint dwEventThread,
+            uint dwmsEventTime);
 
         private enum CtrlTypes : uint
         {
@@ -63,23 +76,21 @@ namespace AirPlay
         [DllImport("user32.dll")]
         private static extern bool SetForegroundWindow(IntPtr hWnd);
 
-        [DllImport("user32.dll", EntryPoint = "GetWindowLongPtr")]
-        private static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int nIndex);
-
-        [DllImport("user32.dll", EntryPoint = "GetWindowLong")]
-        private static extern int GetWindowLong32(IntPtr hWnd, int nIndex);
-
-        [DllImport("user32.dll", EntryPoint = "SetWindowLongPtr")]
-        private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
-
-        [DllImport("user32.dll", EntryPoint = "SetWindowLong")]
-        private static extern int SetWindowLong32(IntPtr hWnd, int nIndex, int dwNewLong);
-
-        [DllImport("user32.dll")]
-        private static extern IntPtr CallWindowProc(IntPtr lpPrevWndFunc, IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
-
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool SetConsoleCtrlHandler(ConsoleCtrlHandlerDelegate handler, bool add);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetWinEventHook(
+            uint eventMin,
+            uint eventMax,
+            IntPtr hmodWinEventProc,
+            WinEventProc lpfnWinEventProc,
+            uint idProcess,
+            uint idThread,
+            uint dwFlags);
+
+        [DllImport("user32.dll")]
+        private static extern bool UnhookWinEvent(IntPtr hWinEventHook);
 
         [DllImport("user32.dll", CharSet = CharSet.Auto)]
         private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
@@ -93,9 +104,6 @@ namespace AirPlay
             int cx,
             int cy,
             uint uFlags);
-
-        private static IntPtr _originalWndProc;
-        private static IntPtr _attachedHandle;
 
         public static void Attach()
         {
@@ -122,8 +130,57 @@ namespace AirPlay
                 return;
             }
 
-            EnsureSubclassAttached(handle);
+            _trackedConsoleHwnd = handle;
+            _skipLegacyWindowHooks = className.ToString() == "PseudoConsoleWindow";
+
+            EnsureConsoleCloseHandler();
             ApplyConsoleWindowIcon(handle);
+
+            if (_skipLegacyWindowHooks)
+            {
+                // #region agent log
+                DebugSessionLog.Write("A", "ConsoleTrayWindow.Attach", "ConPTY：跳过 WinEvent/WndProc 最小化 Hook", null);
+                // #endregion
+            }
+        }
+
+        /// <summary>须在即将调用 Application.Run 的同一线程上安装，以便 WinEvent 回调能派发。</summary>
+        public static void InstallMinimizeHook()
+        {
+            if (_skipLegacyWindowHooks || _trackedConsoleHwnd == IntPtr.Zero || _minimizeHook != IntPtr.Zero)
+            {
+                return;
+            }
+
+            _winEventCallback = OnMinimizeWinEvent;
+            _minimizeHook = SetWinEventHook(
+                EventSystemMinimizeStart,
+                EventSystemMinimizeStart,
+                IntPtr.Zero,
+                _winEventCallback,
+                0,
+                0,
+                WineventOutofcontext);
+
+            // #region agent log
+            DebugSessionLog.Write("F", "ConsoleTrayWindow.InstallMinimizeHook", "SetWinEventHook", new
+            {
+                hook = _minimizeHook.ToInt64(),
+                ok = _minimizeHook != IntPtr.Zero,
+                consoleHwnd = _trackedConsoleHwnd.ToInt64(),
+            });
+            // #endregion
+        }
+
+        public static void Shutdown()
+        {
+            if (_minimizeHook == IntPtr.Zero)
+            {
+                return;
+            }
+
+            UnhookWinEvent(_minimizeHook);
+            _minimizeHook = IntPtr.Zero;
         }
 
         public static void Hide()
@@ -148,43 +205,52 @@ namespace AirPlay
                 return;
             }
 
-            EnsureSubclassAttached(handle);
+            EnsureConsoleCloseHandler();
             ShowWindow(handle, SwRestore);
             ApplyConsoleWindowIcon(handle);
             SetForegroundWindow(handle);
         }
 
-        private static void EnsureSubclassAttached(IntPtr handle)
+        private static void EnsureConsoleCloseHandler()
         {
-            _wndProc ??= ConsoleWindowWndProc;
-            var ourProc = Marshal.GetFunctionPointerForDelegate(_wndProc);
-            var currentProc = GetWindowLongPtr(handle, GwlWndproc);
-
-            if (handle == _attachedHandle && currentProc == ourProc)
+            if (_consoleCtrlHandler != null)
             {
-                // #region agent log
-                DebugSessionLog.Write("B", "ConsoleTrayWindow.EnsureSubclassAttached", "subclass already ours", new { hwnd = handle.ToInt64(), procMatch = true });
-                // #endregion
                 return;
             }
 
-            if (currentProc != ourProc)
+            _consoleCtrlHandler = OnConsoleCtrl;
+            SetConsoleCtrlHandler(_consoleCtrlHandler, true);
+        }
+
+        private static void OnMinimizeWinEvent(
+            IntPtr hWinEventHook,
+            uint eventType,
+            IntPtr hwnd,
+            int idObject,
+            int idChild,
+            uint dwEventThread,
+            uint dwmsEventTime)
+        {
+            if (eventType != EventSystemMinimizeStart)
             {
-                _originalWndProc = currentProc;
-                SetWindowLongPtr(handle, GwlWndproc, ourProc);
+                return;
             }
 
-            _attachedHandle = handle;
+            var consoleHwnd = _trackedConsoleHwnd != IntPtr.Zero ? _trackedConsoleHwnd : GetConsoleWindow();
+            if (hwnd != consoleHwnd)
+            {
+                return;
+            }
+
             // #region agent log
-            var after = GetWindowLongPtr(handle, GwlWndproc);
-            DebugSessionLog.Write("B", "ConsoleTrayWindow.EnsureSubclassAttached", "subclass (re)attached", new { hwnd = handle.ToInt64(), replaced = currentProc != ourProc, afterMatch = after == ourProc, original = _originalWndProc.ToInt64() });
+            DebugSessionLog.Write("F", "ConsoleTrayWindow.OnMinimizeWinEvent", "EVENT_SYSTEM_MINIMIZESTART", new
+            {
+                hwnd = hwnd.ToInt64(),
+                consoleHwnd = consoleHwnd.ToInt64(),
+            });
             // #endregion
 
-            if (_consoleCtrlHandler == null)
-            {
-                _consoleCtrlHandler = OnConsoleCtrl;
-                SetConsoleCtrlHandler(_consoleCtrlHandler, true);
-            }
+            Hide();
         }
 
         private static void ApplyConsoleWindowIcon(IntPtr handle)
@@ -229,70 +295,22 @@ namespace AirPlay
 
         private static bool OnConsoleCtrl(CtrlTypes ctrlType)
         {
-            if (ctrlType == CtrlTypes.CtrlCloseEvent)
+            if (ctrlType == CtrlTypes.CtrlCloseEvent
+                || ctrlType == CtrlTypes.CtrlLogoffEvent
+                || ctrlType == CtrlTypes.CtrlShutdownEvent)
             {
-                Hide();
+                // #region agent log
+                DebugSessionLog.Write("H5", "ConsoleTrayWindow.OnConsoleCtrl", "request application exit", new
+                {
+                    ctrlType = ctrlType.ToString(),
+                    hasExitHandler = _requestExit != null,
+                }, runId: "post-fix");
+                // #endregion
+                _requestExit?.Invoke();
                 return true;
             }
 
             return false;
-        }
-
-        private static IntPtr ConsoleWindowWndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
-        {
-            if (msg == WmClose)
-            {
-                // #region agent log
-                DebugSessionLog.Write("B", "ConsoleTrayWindow.WndProc", "WM_CLOSE", new { hwnd = hWnd.ToInt64() });
-                // #endregion
-                Hide();
-                return IntPtr.Zero;
-            }
-
-            if (msg == WmSysCommand)
-            {
-                var cmd = wParam.ToInt32() & 0xFFF0;
-                // #region agent log
-                DebugSessionLog.Write("B", "ConsoleTrayWindow.WndProc", "WM_SYSCOMMAND", new { hwnd = hWnd.ToInt64(), cmd, isMinimize = cmd == ScMinimize });
-                // #endregion
-                if (cmd == ScMinimize)
-                {
-                    Hide();
-                    return IntPtr.Zero;
-                }
-            }
-
-            if (msg == WmSize && wParam.ToInt32() == SizeMinimized)
-            {
-                // #region agent log
-                DebugSessionLog.Write("B", "ConsoleTrayWindow.WndProc", "WM_SIZE minimized", new { hwnd = hWnd.ToInt64() });
-                // #endregion
-                Hide();
-                return IntPtr.Zero;
-            }
-
-            return CallWindowProc(_originalWndProc, hWnd, msg, wParam, lParam);
-        }
-
-        private static IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex)
-        {
-            if (IntPtr.Size == 8)
-            {
-                return GetWindowLongPtr64(hWnd, nIndex);
-            }
-
-            return new IntPtr(GetWindowLong32(hWnd, nIndex));
-        }
-
-        private static IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr newValue)
-        {
-            if (IntPtr.Size == 8)
-            {
-                return SetWindowLongPtr64(hWnd, nIndex, newValue);
-            }
-
-            var previous = SetWindowLong32(hWnd, nIndex, newValue.ToInt32());
-            return new IntPtr(previous);
         }
 
     }
