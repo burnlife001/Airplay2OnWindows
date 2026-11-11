@@ -5,6 +5,7 @@ using System.IO;
 using System.IO.Pipes;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using AirPlay.Models;
@@ -33,6 +34,10 @@ namespace AirPlay.Services
         private Process _ffplayProcess;
         private List<byte[]> _pendingFrames = new List<byte[]>();
         private bool _hasReceivedKeyFrame = false;
+#if USE_WINDOWS_TRAY
+        private bool _videoSizeAdjusted = false;
+        private bool _closeRequestedSubscribed = false;
+#endif
 
         public event EventHandler<string> OnStatusChanged;
         public event EventHandler FfplayExited;
@@ -90,6 +95,12 @@ namespace AirPlay.Services
                     PipeOptions.Asynchronous);
 
                 Console.WriteLine($"Video pipe created: \\\\.\\pipe\\{PIPE_NAME}");
+
+#if USE_WINDOWS_TRAY
+                // Close button of the embedded video window stops the current mirroring session.
+                // The session itself is released later via FfplayExited -> AirPlayService.HandleFfplayExitedAsync.
+                SubscribeVideoWindowCloseRequest();
+#endif
 
                 // Launch ffplay to connect to the pipe
                 LaunchFfplay($"\\\\.\\pipe\\{PIPE_NAME}");
@@ -149,7 +160,10 @@ namespace AirPlay.Services
             // never hands packets to the decoder, so no frame is ever decoded, ffplay never
             // creates/shows its SDL video window (it stays hidden with the default "ffplay"
             // title) and the mirroring picture never appears.
-            var ffplayArgs = $"-f h264 -probesize 32768 -analyzeduration 0 -flags low_delay -framedrop -avioflags direct -vf setpts=0 \"{pipePath}\"";
+            //
+            // The ffplay window is borderless and titled "AirPlay"; it is embedded into the
+            // in-app VideoWindow via SetParent once it appears.
+            var ffplayArgs = $"-f h264 -probesize 32768 -analyzeduration 0 -flags low_delay -framedrop -avioflags direct -vf setpts=0 -noborder -window_title \"AirPlay\" -x 1280 -y 720 \"{pipePath}\"";
 
             try
             {
@@ -176,6 +190,13 @@ namespace AirPlay.Services
                     _ffplayProcess.EnableRaisingEvents = true;
                     _ffplayProcess.Exited += OnFfplayProcessExited;
                     Console.WriteLine($"ffplay launched (PID: {_ffplayProcess.Id})");
+
+#if USE_WINDOWS_TRAY
+                    if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                    {
+                        AttachFfplayWindowInBackground(_ffplayProcess, _cts?.Token ?? CancellationToken.None);
+                    }
+#endif
                 }
             }
             catch (Exception ex)
@@ -184,6 +205,172 @@ namespace AirPlay.Services
                 Console.WriteLine($"  You can manually connect with: ffplay {ffplayArgs}");
             }
         }
+
+#if USE_WINDOWS_TRAY
+        private const string PlayerWindowTitle = "AirPlay";
+
+        /// <summary>
+        /// Polls for the ffplay window and reparents it into the in-app video window.
+        /// ffplay is a console app, so Process.MainWindowHandle may point at the console window
+        /// (or be 0). The SDL window is therefore located by PID + title instead.
+        /// </summary>
+        private void AttachFfplayWindowInBackground(Process ffplay, CancellationToken token)
+        {
+            Task.Run(async () =>
+            {
+                var deadline = DateTime.UtcNow.AddSeconds(10);
+                while (!token.IsCancellationRequested && DateTime.UtcNow < deadline)
+                {
+                    try
+                    {
+                        ffplay.Refresh();
+                        if (ffplay.HasExited)
+                        {
+                            // #region agent log
+                            DebugSessionLog.Write("V1", "VideoOutputService.AttachFfplayWindowInBackground", "ffplay exited before window appeared", null);
+                            // #endregion
+                            return;
+                        }
+
+                        IntPtr hwnd;
+                        if (!TryFindPlayerWindow(ffplay.Id, out hwnd))
+                        {
+                            // Last resort: MainWindowHandle, but only if it really belongs to this process.
+                            var main = ffplay.MainWindowHandle;
+                            hwnd = main != IntPtr.Zero && IsWindowOfProcess(main, ffplay.Id) ? main : IntPtr.Zero;
+                        }
+
+                        if (hwnd != IntPtr.Zero)
+                        {
+                            var title = GetWindowTitle(hwnd);
+                            // #region agent log
+                            DebugSessionLog.Write("V1", "VideoOutputService.AttachFfplayWindowInBackground", "ffplay window found", new
+                            {
+                                pid = ffplay.Id,
+                                hwnd = hwnd.ToInt64(),
+                                windowTitle = title,
+                            });
+                            // #endregion
+                            VideoWindow.AttachPlayer(hwnd, 0, 0);
+                            return;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // #region agent log
+                        DebugSessionLog.Write("V1", "VideoOutputService.AttachFfplayWindowInBackground", "window poll failed", new { error = ex.GetType().Name, message = ex.Message });
+                        // #endregion
+                        return;
+                    }
+
+                    try
+                    {
+                        await Task.Delay(100, token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return;
+                    }
+                }
+
+                // #region agent log
+                DebugSessionLog.Write("V1", "VideoOutputService.AttachFfplayWindowInBackground", "ffplay window not found within timeout", null);
+                // #endregion
+            });
+        }
+
+        /// <summary>
+        /// Enumerates top-level windows and finds the ffplay SDL window for <paramref name="pid"/>.
+        /// Prefers the window titled <see cref="PlayerWindowTitle"/>; falls back to the first
+        /// visible window with a non-empty title owned by the process.
+        /// </summary>
+        private static bool TryFindPlayerWindow(int pid, out IntPtr hwnd)
+        {
+            IntPtr exact = IntPtr.Zero;
+            IntPtr fallback = IntPtr.Zero;
+
+            EnumWindows((candidate, _) =>
+            {
+                if (!IsWindowVisible(candidate)) return true;
+
+                GetWindowThreadProcessId(candidate, out uint windowPid);
+                if (windowPid != (uint)pid) return true;
+
+                var title = GetWindowTitle(candidate);
+                if (title.Length == 0) return true;
+
+                if (title == PlayerWindowTitle)
+                {
+                    exact = candidate;
+                    return false;
+                }
+
+                if (fallback == IntPtr.Zero) fallback = candidate;
+                return true;
+            }, IntPtr.Zero);
+
+            hwnd = exact != IntPtr.Zero ? exact : fallback;
+            return hwnd != IntPtr.Zero;
+        }
+
+        private static bool IsWindowOfProcess(IntPtr hwnd, int pid)
+        {
+            GetWindowThreadProcessId(hwnd, out uint windowPid);
+            return windowPid == (uint)pid;
+        }
+
+        private static string GetWindowTitle(IntPtr hwnd)
+        {
+            var buffer = new StringBuilder(256);
+            int length = GetWindowTextW(hwnd, buffer, buffer.Capacity);
+            return length > 0 ? buffer.ToString(0, length) : string.Empty;
+        }
+
+        private void SubscribeVideoWindowCloseRequest()
+        {
+            if (_closeRequestedSubscribed) return;
+
+            _closeRequestedSubscribed = true;
+            VideoWindow.CloseRequested += OnVideoWindowCloseRequested;
+        }
+
+        private void OnVideoWindowCloseRequested(object? sender, EventArgs e)
+        {
+            // #region agent log
+            DebugSessionLog.Write("V1", "VideoOutputService.OnVideoWindowCloseRequested", "close requested from video window", null);
+            // #endregion
+
+            // This runs on the WinForms UI thread. Never block it: stop mirroring on the thread pool
+            // (StopMirroring kills ffplay and may wait for it to exit).
+            Task.Run(() =>
+            {
+                try
+                {
+                    StopMirroring();
+                }
+                catch (Exception ex)
+                {
+                    // #region agent log
+                    DebugSessionLog.Write("V1", "VideoOutputService.OnVideoWindowCloseRequested", "StopMirroring failed", new { error = ex.GetType().Name, message = ex.Message });
+                    // #endregion
+                }
+            });
+        }
+
+        private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern int GetWindowTextW(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+#endif
 
         private string FindFfplay()
         {
@@ -298,6 +485,9 @@ namespace AirPlay.Services
             _connected = false;
             _pendingFrames.Clear();
             _hasReceivedKeyFrame = false;
+#if USE_WINDOWS_TRAY
+            _videoSizeAdjusted = false;
+#endif
 
             try
             {
@@ -320,6 +510,14 @@ namespace AirPlay.Services
                 DebugSessionLog.Write("H6", "VideoOutputService.CleanupSession", "unix pipe dispose failed", new { error = ex.GetType().Name, message = ex.Message });
             }
             _unixPipeStream = null;
+
+#if USE_WINDOWS_TRAY
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                // ffplay is about to be killed, so there is no need to reparent its window back.
+                VideoWindow.DetachPlayer();
+            }
+#endif
 
             StopFfplay();
 
@@ -433,6 +631,18 @@ namespace AirPlay.Services
                 if (data.Data == null || data.Length <= 0) return;
 
                 bool isKeyFrame = data.FrameType == 5;
+
+#if USE_WINDOWS_TRAY
+                // First keyframe of the session carries the real video resolution: size the window to it.
+                if (!_videoSizeAdjusted && isKeyFrame && data.Width > 0 && data.Height > 0)
+                {
+                    _videoSizeAdjusted = true;
+                    // #region agent log
+                    DebugSessionLog.Write("V1", "VideoOutputService.WriteFrame", "first frame size received", new { width = data.Width, height = data.Height });
+                    // #endregion
+                    VideoWindow.AdjustToVideoSize(data.Width, data.Height);
+                }
+#endif
 
                 if (!_connected)
                 {

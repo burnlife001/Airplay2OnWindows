@@ -37,6 +37,8 @@ namespace AirPlay
             });
             // #endregion
 
+            VideoWindow.CloseForShutdown();
+
             ConsoleTrayWindow.Shutdown();
             // #region agent log
             DebugSessionLog.Write("H6", "WindowsTrayHost.RunAsync", "after Shutdown", null);
@@ -81,6 +83,8 @@ namespace AirPlay
             {
                 _cts = cts;
                 _uiContext = SynchronizationContext.Current;
+
+                VideoWindow.Initialize();
 
                 var menu = new ContextMenuStrip();
                 var showItem = new ToolStripMenuItem("显示窗口");
