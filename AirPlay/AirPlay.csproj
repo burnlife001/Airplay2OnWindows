@@ -21,6 +21,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    <OutputType>WinExe</OutputType>
     <DefineConstants>$(DefineConstants);USE_WINDOWS_TRAY</DefineConstants>
   </PropertyGroup>
   <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">

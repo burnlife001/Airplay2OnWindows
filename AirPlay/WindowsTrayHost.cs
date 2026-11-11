@@ -87,10 +87,6 @@ namespace AirPlay
                 VideoWindow.Initialize();
 
                 var menu = new ContextMenuStrip();
-                var showItem = new ToolStripMenuItem("显示窗口");
-                showItem.Click += (_, _) => ConsoleTrayWindow.Show();
-                menu.Items.Add(showItem);
-
                 var exitItem = new ToolStripMenuItem("退出");
                 exitItem.Click += (_, _) => RequestExit();
                 menu.Items.Add(exitItem);
@@ -112,7 +108,7 @@ namespace AirPlay
                     // #endregion
                     if (e.Button == MouseButtons.Left)
                     {
-                        ConsoleTrayWindow.Show();
+                        VideoWindow.ShowIfActive();
                     }
                 };
             }

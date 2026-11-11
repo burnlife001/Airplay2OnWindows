@@ -21,6 +21,13 @@ namespace AirPlay
         [STAThread]
         public static async Task Main(string[] args)
         {
+#if USE_WINDOWS_TRAY
+            if (OperatingSystem.IsWindows())
+            {
+                AppFileLog.Install();
+            }
+#endif
+
             // DUMP WAV AUDIO
             //var dir = Directory.GetFiles("dump/pcm");
             //var _audiobuf = dir.SelectMany(d => File.ReadAllBytes(d)).ToList();

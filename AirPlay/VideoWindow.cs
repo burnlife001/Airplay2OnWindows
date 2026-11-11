@@ -97,6 +97,34 @@ namespace AirPlay
         }
 
         /// <summary>
+        /// Shows and activates the existing video window only while a player is attached.
+        /// </summary>
+        public static void ShowIfActive()
+        {
+            var form = _form;
+            if (_playerHwnd == IntPtr.Zero || form == null || !form.IsHandleCreated || form.IsDisposed || form.Disposing) return;
+
+            try
+            {
+                form.BeginInvoke(new Action(() =>
+                {
+                    try
+                    {
+                        if (_playerHwnd == IntPtr.Zero || form.IsDisposed || form.Disposing) return;
+                        form.Show();
+                        form.Activate();
+                    }
+                    catch
+                    {
+                    }
+                }));
+            }
+            catch
+            {
+            }
+        }
+
+        /// <summary>
         /// Reparents the ffplay window into the video window and shows it.
         /// Safe to call from any thread.
         /// </summary>
