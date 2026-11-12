@@ -7,7 +7,6 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System;
 using System.IO;
-using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,8 +15,6 @@ namespace AirPlay
 {
     public class Program
     {
-        public static IConfigurationRoot Configuration;
-
         [STAThread]
         public static async Task Main(string[] args)
         {

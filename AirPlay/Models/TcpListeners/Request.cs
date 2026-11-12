@@ -37,11 +37,6 @@ namespace AirPlay.Models
             Initialize();
         }
 
-        public Task<byte[]> GetFullRawAsync()
-        {
-            return Task.FromResult(_hex.HexToBytes());
-        }
-
         private void Initialize ()
         {
             // Split hex by '\r\n' (0D0A)

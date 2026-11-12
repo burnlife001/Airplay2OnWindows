@@ -44,20 +44,6 @@ namespace AirPlay.Models
             return (T)typeConverter.ConvertFromString(value);
         }
 
-        public IEnumerable<T> GetValues<T>(string key)
-        {
-            var typeConverter = TypeDescriptor.GetConverter(typeof(T));
-            var values = _headers[key].Values;
-
-            var vals = new List<T>();
-            foreach (var value in values)
-            {
-                vals.Add((T)typeConverter.ConvertFromString(value));
-            }
-
-            return vals;
-        }
-
         public void Add(string key, string value)
         {
             _headers.Add(key, new Header(key, value));

@@ -30,7 +30,6 @@ namespace AirPlay.Services
         private bool _connected = false;
         private long _frameCount = 0;
         private CancellationTokenSource _cts;
-        private Task _acceptTask;
         private Process _ffplayProcess;
         private List<byte[]> _pendingFrames = new List<byte[]>();
         private bool _hasReceivedKeyFrame = false;
@@ -99,7 +98,7 @@ namespace AirPlay.Services
                 LaunchFfplay($"\\\\.\\pipe\\{PIPE_NAME}");
 
                 // Wait for ffplay to connect in background
-                _acceptTask = Task.Run(() => WaitForPipeConnection(_cts.Token));
+                _ = Task.Run(() => WaitForPipeConnection(_cts.Token));
             }
             catch (Exception ex)
             {
@@ -131,7 +130,7 @@ namespace AirPlay.Services
                 LaunchFfplay(UNIX_PIPE_PATH);
 
                 // Open the FIFO for writing (blocks until reader connects)
-                _acceptTask = Task.Run(() => WaitForUnixPipeConnection(_cts.Token));
+                _ = Task.Run(() => WaitForUnixPipeConnection(_cts.Token));
             }
             catch (Exception ex)
             {

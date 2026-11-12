@@ -38,27 +38,6 @@ namespace AirPlay.Services.Implementations
             return Task.CompletedTask;
         }
 
-        public async Task ClearMirroringStateAsync(string sessionId, Action onMirroringStopped, string reason)
-        {
-            var session = await GetSessionAsync(sessionId);
-            if (session.MirroringListener == null && session.StreamConnectionId == null)
-            {
-                return;
-            }
-
-            session.MirroringListener = null;
-            session.SpsPps = null;
-            session.StreamConnectionId = null;
-            session.MirroringSession = null;
-            await CreateOrUpdateSessionAsync(sessionId, session);
-
-            // #region agent log
-            DebugSessionLog.Write("H7", "SessionManager.ClearMirroringStateAsync", "mirroring state cleared", new { sessionId, reason });
-            // #endregion
-
-            onMirroringStopped?.Invoke();
-        }
-
         public async Task ReleaseMirroringAsync(string sessionId, Action onMirroringStopped, string reason, BaseTcpListener expectedListener = null)
         {
             var session = await GetSessionAsync(sessionId);

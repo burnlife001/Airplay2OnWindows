@@ -228,41 +228,6 @@ namespace AirPlay.Services
             }
         }
 
-        /// <summary>
-        /// Recreate the audio output after an error.
-        /// </summary>
-        public void Recreate()
-        {
-            lock (_lock)
-            {
-                Console.WriteLine("Recreating audio output...");
-
-                try
-                {
-                    _waveOut?.Dispose();
-                }
-                catch { }
-
-                Thread.Sleep(COM_CLEANUP_DELAY_MS);
-
-                try
-                {
-                    _streamProvider?.Clear();
-                    _waveOut = new DirectSoundOut(40);
-                    _waveOut.PlaybackStopped += OnPlaybackStopped;
-                    _initialized = false;
-                    _isPlaying = false;
-                    _sampleCount = 0;
-                    _needsReinit = false;
-                    Console.WriteLine("Audio output recreated successfully");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Failed to recreate audio output: {ex.Message}");
-                }
-            }
-        }
-
         public void Dispose()
         {
             var stopwatch = Stopwatch.StartNew();
