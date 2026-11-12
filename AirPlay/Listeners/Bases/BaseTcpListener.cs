@@ -95,9 +95,12 @@ namespace AirPlay.Listeners
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     var client = await _listener.AcceptTcpClientAsync().ConfigureAwait(false);
-                    var task = HandleClientAsync(client, cancellationToken);
-
                     var remoteEndpoint = client.Client.RemoteEndPoint.ToString();
+
+                    // 客户端处理里是同步阻塞的 stream.Read，必须放到线程池执行：
+                    // 否则 accept 线程会卡在读某个长连接上，Stop() 之后 _acceptTask 永不结束，进程退不出去。
+                    var task = Task.Run(() => HandleClientAsync(client, cancellationToken));
+
                     if (!_connections.TryAdd(remoteEndpoint, task))
                     {
                         client.Close();
