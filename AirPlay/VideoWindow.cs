@@ -18,7 +18,7 @@ namespace AirPlay
     internal static class VideoWindow
     {
         private const int DragStripHeight = 24;
-        private const int ResizeBorder = 6;
+        private const int ResizeBorder = 8;
         private const int CloseButtonSize = 24;
         private const int DefaultWidth = 1280;
         private const int DefaultHeight = 720;
@@ -26,6 +26,7 @@ namespace AirPlay
         private const int MinHeight = 180;
 
         private const int WmNcHitTest = 0x0084;
+        private const int WmSetCursor = 0x0020;
 
         private const int HtClient = 1;
         private const int HtCaption = 2;
@@ -213,14 +214,20 @@ namespace AirPlay
             try
             {
                 var area = Screen.FromControl(form).WorkingArea;
-                double maxVideoWidth = area.Width * 0.9;
-                double maxVideoHeight = (area.Height * 0.9) - DragStripHeight;
-                double scale = Math.Min(1.0, Math.Min(maxVideoWidth / width, maxVideoHeight / height));
+                int dpi = form.DeviceDpi;
+                int strip = ScaleForDpi(DragStripHeight, dpi);
+                int border = ScaleForDpi(ResizeBorder, dpi);
+                double maxClientWidth = area.Width * 0.9;
+                double maxClientHeight = area.Height * 0.9;
+                double maxVideoWidth = maxClientWidth - border * 2;
+                double maxVideoHeight = maxClientHeight - strip - border;
+                // Allow upscaling (up to 2x) so low-resolution streams are not shown tiny.
+                double scale = Math.Min(2.0, Math.Min(maxVideoWidth / width, maxVideoHeight / height));
 
-                int clientWidth = Math.Max(MinWidth, (int)Math.Round(width * scale));
-                int clientHeight = Math.Max(MinHeight, (int)Math.Round(height * scale) + DragStripHeight);
-                clientWidth = Math.Min(clientWidth, Math.Max(MinWidth, (int)Math.Round(area.Width * 0.9)));
-                clientHeight = Math.Min(clientHeight, Math.Max(MinHeight, (int)Math.Round(area.Height * 0.9)));
+                int clientWidth = (int)Math.Round(width * scale) + border * 2;
+                int clientHeight = (int)Math.Round(height * scale) + strip + border;
+                clientWidth = Math.Max(MinWidth, Math.Min(clientWidth, (int)Math.Round(maxClientWidth)));
+                clientHeight = Math.Max(MinHeight, Math.Min(clientHeight, (int)Math.Round(maxClientHeight)));
 
                 form.ClientSize = new Size(clientWidth, clientHeight);
                 form.Location = new Point(
@@ -335,15 +342,20 @@ namespace AirPlay
             }
         }
 
-        private static int HitTest(Point clientPoint, Size client)
+        private static int ScaleForDpi(int value, int dpi)
+        {
+            return Math.Max(1, (int)Math.Round(value * dpi / 96.0));
+        }
+
+        private static int HitTest(Point clientPoint, Size client, int border, int strip)
         {
             int width = client.Width;
             int height = client.Height;
 
-            bool left = clientPoint.X < ResizeBorder;
-            bool right = clientPoint.X >= width - ResizeBorder;
-            bool top = clientPoint.Y < ResizeBorder;
-            bool bottom = clientPoint.Y >= height - ResizeBorder;
+            bool left = clientPoint.X < border;
+            bool right = clientPoint.X >= width - border;
+            bool top = clientPoint.Y < border;
+            bool bottom = clientPoint.Y >= height - border;
 
             if (top && left) return HtTopLeft;
             if (top && right) return HtTopRight;
@@ -354,7 +366,7 @@ namespace AirPlay
             if (top) return HtTop;
             if (bottom) return HtBottom;
 
-            if (clientPoint.Y >= 0 && clientPoint.Y < DragStripHeight)
+            if (clientPoint.Y >= 0 && clientPoint.Y < strip)
             {
                 return HtCaption;
             }
@@ -412,6 +424,8 @@ namespace AirPlay
 
             /// <summary>
             /// Positions the close button and the embedded player inside the client area.
+            /// The player is inset by the resize border so that window edges stay clickable
+            /// for mouse resizing (a child window would otherwise swallow those pixels).
             /// Safe to call before the close button exists (form construction re-entrancy).
             /// </summary>
             public void LayoutChildren()
@@ -419,18 +433,33 @@ namespace AirPlay
                 var client = ClientRectangle;
                 if (client.Width <= 0 || client.Height <= 0) return;
 
+                int border = BorderPx;
+                int strip = StripPx;
+                int close = ClosePx;
+
                 if (_closeButton != null)
                 {
-                    _closeButton.Location = new Point(Math.Max(0, client.Width - CloseButtonSize), 0);
+                    _closeButton.Size = new Size(close, close);
+                    _closeButton.Location = new Point(Math.Max(0, client.Width - close), 0);
                 }
 
                 var player = _playerHwnd;
                 if (player != IntPtr.Zero)
                 {
-                    int videoHeight = Math.Max(0, client.Height - DragStripHeight);
-                    MoveWindow(player, 0, DragStripHeight, client.Width, videoHeight, true);
+                    int videoWidth = client.Width - border * 2;
+                    int videoHeight = client.Height - strip - border;
+                    if (videoWidth > 0 && videoHeight > 0)
+                    {
+                        MoveWindow(player, border, strip, videoWidth, videoHeight, true);
+                    }
                 }
             }
+
+            private int BorderPx => ScaleForDpi(ResizeBorder, DeviceDpi);
+
+            private int StripPx => ScaleForDpi(DragStripHeight, DeviceDpi);
+
+            private int ClosePx => ScaleForDpi(CloseButtonSize, DeviceDpi);
 
             protected override void OnResize(EventArgs e)
             {
@@ -446,8 +475,37 @@ namespace AirPlay
                     int screenX = unchecked((short)(lParam & 0xFFFF));
                     int screenY = unchecked((short)((lParam >> 16) & 0xFFFF));
                     var clientPoint = PointToClient(new Point(screenX, screenY));
-                    m.Result = (IntPtr)HitTest(clientPoint, ClientSize);
+                    m.Result = (IntPtr)HitTest(clientPoint, ClientSize, BorderPx, StripPx);
                     return;
+                }
+
+                if (m.Msg == WmSetCursor)
+                {
+                    // Borderless windows have no WS_THICKFRAME, so DefWindowProc never shows
+                    // the sizing cursors; set them explicitly for the resize border.
+                    switch (HitTest(PointToClient(Cursor.Position), ClientSize, BorderPx, StripPx))
+                    {
+                        case HtLeft:
+                        case HtRight:
+                            Cursor = Cursors.SizeWE;
+                            m.Result = (IntPtr)1;
+                            return;
+                        case HtTop:
+                        case HtBottom:
+                            Cursor = Cursors.SizeNS;
+                            m.Result = (IntPtr)1;
+                            return;
+                        case HtTopLeft:
+                        case HtBottomRight:
+                            Cursor = Cursors.SizeNWSE;
+                            m.Result = (IntPtr)1;
+                            return;
+                        case HtTopRight:
+                        case HtBottomLeft:
+                            Cursor = Cursors.SizeNESW;
+                            m.Result = (IntPtr)1;
+                            return;
+                    }
                 }
 
                 base.WndProc(ref m);
