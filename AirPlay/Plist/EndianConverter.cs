@@ -13,7 +13,6 @@ namespace System.Runtime.Serialization.Plists
     /// <summary>
     /// Converts the endian-ness of primitive number types.
     /// </summary>
-    [CLSCompliant(false)]
     public static class EndianConverter
     {
         /// <summary>

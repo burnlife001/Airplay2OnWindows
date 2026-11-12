@@ -294,7 +294,7 @@ namespace AirPlay.Listeners
                 stream.Write(payload, 0, payload.Length);
                 stream.Flush();
             }
-            catch (System.IO.IOException e)
+            catch (System.IO.IOException)
             {
                 //
             }

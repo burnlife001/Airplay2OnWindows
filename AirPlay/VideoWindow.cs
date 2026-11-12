@@ -35,6 +35,13 @@ namespace AirPlay
         // 拖动缩放期间重设播放器的最小间隔（毫秒）。
         private const int ResizeThrottleMs = 60;
 
+        // ffplay 有时会在收到外部尺寸后把子窗口改回自己那套尺寸；
+        // 定时兜底重新对齐，否则画面会一直停在初始化时的 1280x720 布局里。
+        private const int PlayerSyncIntervalMs = 300;
+
+        // 跨进程读取的子窗口客户区尺寸允许的像素误差。
+        private const int SizeTolerancePx = 1;
+
         private const int GwlStyle = -16;
         private const int WsChild = 0x40000000;
         private const int WsPopup = unchecked((int)0x80000000);
@@ -56,9 +63,6 @@ namespace AirPlay
 
         private static VideoForm? _form;
         private static IntPtr _playerHwnd = IntPtr.Zero;
-
-        // 已经应用到 ffplay 子窗口的区域，内容不变时不再跨进程重设，避免拖动时无谓重建交换链。
-        private static Rectangle _lastPlayerBounds;
 
         /// <summary>
         /// Raised on the UI thread when the user clicks the close button of the video window.
@@ -158,7 +162,6 @@ namespace AirPlay
             try
             {
                 _playerHwnd = playerHwnd;
-                _lastPlayerBounds = Rectangle.Empty;
 
                 ShowWindow(playerHwnd, SwHide);
                 SetParent(playerHwnd, form.Handle);
@@ -180,6 +183,9 @@ namespace AirPlay
                 // SDL 在窗口隐藏期间可能丢弃尺寸事件，显示后重新对齐一次，避免画面被裁切。
                 form.LayoutChildren();
 
+                // ffplay 之后可能自行改写窗口尺寸，启动定时兜底把它拉回目标矩形。
+                form.StartPlayerTimer();
+
                 // #region agent log
                 DebugSessionLog.Write("V1", "VideoWindow.AttachPlayer", "ffplay window attached", new
                 {
@@ -187,6 +193,16 @@ namespace AirPlay
                     parent = form.Handle.ToInt64(),
                     videoWidth,
                     videoHeight,
+                    clientWidth = form.ClientSize.Width,
+                    clientHeight = form.ClientSize.Height,
+                    deviceDpi = form.DeviceDpi,
+                    stripPx = form.StripPx,
+                    targetWidth = form.PlayerTarget.Width,
+                    targetHeight = form.PlayerTarget.Height,
+                    targetX = form.PlayerTarget.X,
+                    targetY = form.PlayerTarget.Y,
+                    playerClientWidth = GetPlayerClientSize(playerHwnd).Width,
+                    playerClientHeight = GetPlayerClientSize(playerHwnd).Height,
                 });
                 // #endregion
             }
@@ -282,9 +298,9 @@ namespace AirPlay
             }
 
             _playerHwnd = IntPtr.Zero;
-            _lastPlayerBounds = Rectangle.Empty;
             try
             {
+                form.StopPlayerTimer();
                 form.Hide();
             }
             catch
@@ -304,7 +320,6 @@ namespace AirPlay
             var form = _form;
             _form = null;
             _playerHwnd = IntPtr.Zero;
-            _lastPlayerBounds = Rectangle.Empty;
             if (form == null) return;
 
             try
@@ -356,6 +371,16 @@ namespace AirPlay
             return Math.Max(1, (int)Math.Round(value * dpi / 96.0));
         }
 
+        /// <summary>
+        /// 读取 ffplay 子窗口的真实客户区尺寸。读取失败返回空，调用方据此跳过比较。
+        /// </summary>
+        private static Size GetPlayerClientSize(IntPtr player)
+        {
+            if (player == IntPtr.Zero) return Size.Empty;
+            if (!GetClientRect(player, out var rect)) return Size.Empty;
+            return new Size(Math.Max(0, rect.Right - rect.Left), Math.Max(0, rect.Bottom - rect.Top));
+        }
+
         private static IntPtr GetWindowLongPtrSafe(IntPtr hWnd, int nIndex)
         {
             return IntPtr.Size == 8
@@ -376,6 +401,13 @@ namespace AirPlay
             private bool _allowRealClose;
             private readonly Stopwatch _resizeClock = new Stopwatch();
             private bool _inSizeMove;
+
+            // 最近一次按窗体客户区算出的播放器目标矩形（客户区坐标）。
+            private Rectangle _playerTarget;
+
+            // 兜底对齐定时器：ffplay 可能在布局后自行改写窗口尺寸。
+            private readonly Timer _playerTimer;
+
             public VideoForm()
             {
                 FormBorderStyle = FormBorderStyle.None;
@@ -402,6 +434,10 @@ namespace AirPlay
                 _closeButton.Click += OnCloseButtonClick;
                 Controls.Add(_closeButton);
 
+                // Timer 必须在 UI 线程创建（构造函数在 Initialize 的 UI 线程上执行），Tick 才会回到 UI 线程。
+                _playerTimer = new Timer { Interval = PlayerSyncIntervalMs };
+                _playerTimer.Tick += OnPlayerTimerTick;
+
                 MinimumSize = new Size(MinWidth, MinHeight);
             }
 
@@ -427,10 +463,91 @@ namespace AirPlay
                 _closeButton.Location = new Point(Math.Max(0, client.Width - close), 0);
             }
 
+            /// <summary>
+            /// 最后一次计算出的播放器目标矩形（客户区坐标）。
+            /// </summary>
+            public Rectangle PlayerTarget => _playerTarget;
+
+            /// <summary>
+            /// 启动兜底对齐定时器。只在播放器已嵌入且窗体可见时才有意义。
+            /// </summary>
+            public void StartPlayerTimer()
+            {
+                if (IsDisposed || Disposing) return;
+                _playerTimer.Start();
+            }
+
+            public void StopPlayerTimer()
+            {
+                _playerTimer.Stop();
+            }
+
             private void UpdatePlayerBounds()
+            {
+                if (_playerHwnd == IntPtr.Zero) return;
+
+                var client = ClientRectangle;
+                int strip = StripPx;
+                int videoHeight = client.Height - strip;
+                // 画面只让出顶部拖动条，其余整个客户区都归 ffplay。
+                if (client.Width <= 0 || videoHeight <= 0) return;
+
+                _playerTarget = new Rectangle(0, strip, client.Width, videoHeight);
+                ApplyPlayerBounds();
+            }
+
+            /// <summary>
+            /// 把 _playerTarget 下发给 ffplay，再用子窗口真实客户区校验。
+            /// ffplay/SDL 收到外部尺寸后可能再改写一次窗口，尺寸不符就补发一次。
+            /// </summary>
+            private void ApplyPlayerBounds()
             {
                 var player = _playerHwnd;
                 if (player == IntPtr.Zero) return;
+
+                var target = _playerTarget;
+                if (target.Width <= 0 || target.Height <= 0) return;
+
+                MoveWindow(player, target.X, target.Y, target.Width, target.Height, true);
+
+                var actual = GetPlayerClientSize(player);
+                bool matched = SizeMatches(actual, target);
+                if (!matched && !actual.IsEmpty)
+                {
+                    MoveWindow(player, target.X, target.Y, target.Width, target.Height, true);
+                    actual = GetPlayerClientSize(player);
+                    matched = SizeMatches(actual, target);
+                }
+
+                // 补发后仍不符说明 ffplay 不认这个尺寸，只在此时记日志，避免每 300ms 刷一条。
+                if (!matched && !actual.IsEmpty)
+                {
+                    // #region agent log
+                    DebugSessionLog.Write("V1", "VideoForm.ApplyPlayerBounds", "player client size differs from target", new
+                    {
+                        targetWidth = target.Width,
+                        targetHeight = target.Height,
+                        actualWidth = actual.Width,
+                        actualHeight = actual.Height,
+                    });
+                    // #endregion
+                }
+            }
+
+            private static bool SizeMatches(Size actual, Rectangle target)
+            {
+                // 读不到（窗口正在销毁等）时不做判断，避免误判后反复跨进程重设。
+                if (actual.IsEmpty) return true;
+                return Math.Abs(actual.Width - target.Width) <= SizeTolerancePx &&
+                       Math.Abs(actual.Height - target.Height) <= SizeTolerancePx;
+            }
+
+            private void OnPlayerTimerTick(object? sender, EventArgs e)
+            {
+                if (IsDisposed || Disposing || !IsHandleCreated) return;
+                if (_playerHwnd == IntPtr.Zero || !Visible) return;
+                // 拖动期间由 OnResize 节流处理，定时器不要插进来加重 ffplay 的重排。
+                if (_inSizeMove) return;
 
                 var client = ClientRectangle;
                 int strip = StripPx;
@@ -438,12 +555,16 @@ namespace AirPlay
                 if (client.Width <= 0 || videoHeight <= 0) return;
 
                 var target = new Rectangle(0, strip, client.Width, videoHeight);
-                if (target == _lastPlayerBounds) return;
-                _lastPlayerBounds = target;
-                MoveWindow(player, target.X, target.Y, target.Width, target.Height, true);
+                bool targetChanged = target != _playerTarget;
+                _playerTarget = target;
+
+                // 目标没变、子窗口客户区也符合时不发 MoveWindow，避免无谓的跨进程调用。
+                if (!targetChanged && SizeMatches(GetPlayerClientSize(_playerHwnd), target)) return;
+
+                ApplyPlayerBounds();
             }
 
-            private int StripPx => ScaleForDpi(DragStripHeight, DeviceDpi);
+            internal int StripPx => ScaleForDpi(DragStripHeight, DeviceDpi);
 
             private int ClosePx => ScaleForDpi(CloseButtonSize, DeviceDpi);
 
@@ -473,6 +594,24 @@ namespace AirPlay
                 }
 
                 UpdatePlayerBounds();
+            }
+
+            protected override void OnVisibleChanged(EventArgs e)
+            {
+                base.OnVisibleChanged(e);
+                // 窗体隐藏时 ffplay 画面不可见，定时器没必要继续跑；重新显示且仍挂着播放器时恢复。
+                if (!Visible) _playerTimer.Stop();
+                else if (_playerHwnd != IntPtr.Zero) _playerTimer.Start();
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                {
+                    _playerTimer.Tick -= OnPlayerTimerTick;
+                    _playerTimer.Dispose();
+                }
+                base.Dispose(disposing);
             }
 
             protected override void WndProc(ref Message m)
@@ -585,6 +724,18 @@ namespace AirPlay
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool MoveWindow(IntPtr hWnd, int x, int y, int nWidth, int nHeight, bool bRepaint);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeRect
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool GetClientRect(IntPtr hWnd, out NativeRect lpRect);
 
         [DllImport("user32.dll")]
         private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
