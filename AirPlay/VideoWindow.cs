@@ -39,6 +39,13 @@ namespace AirPlay
         private const int WsChild = 0x40000000;
         private const int WsPopup = unchecked((int)0x80000000);
 
+        // ffplay 以带标题栏的普通窗口启动（SDL 只对可缩放窗口响应外部尺寸变更），
+        // 嵌入时去掉这些样式，让它变成纯客户区的子窗口。
+        private const int WsCaption = 0x00C00000;
+        private const int WsSysMenu = 0x00080000;
+        private const int WsMinimizeBox = 0x00020000;
+        private const int WsMaximizeBox = 0x00010000;
+
         private const int SwHide = 0;
         private const int SwShow = 5;
 
@@ -157,7 +164,8 @@ namespace AirPlay
                 SetParent(playerHwnd, form.Handle);
 
                 int style = unchecked((int)GetWindowLongPtrSafe(playerHwnd, GwlStyle).ToInt64());
-                style = (style & ~WsPopup) | WsChild;
+                style &= ~(WsPopup | WsCaption | WsThickFrame | WsSysMenu | WsMinimizeBox | WsMaximizeBox);
+                style |= WsChild;
                 SetWindowLongPtrSafe(playerHwnd, GwlStyle, new IntPtr(unchecked((long)(uint)style)));
                 SetWindowPos(playerHwnd, IntPtr.Zero, 0, 0, 0, 0,
                     SwpNomove | SwpNosize | SwpNozorder | SwpFrameChanged);

@@ -161,9 +161,14 @@ namespace AirPlay.Services
             // creates/shows its SDL video window (it stays hidden with the default "ffplay"
             // title) and the mirroring picture never appears.
             //
-            // The ffplay window is borderless and titled "AirPlay"; it is embedded into the
-            // in-app VideoWindow via SetParent once it appears.
-            var ffplayArgs = $"-f h264 -probesize 32768 -analyzeduration 0 -flags low_delay -framedrop -avioflags direct -vf setpts=0 -noborder -window_title \"AirPlay\" -x 1280 -y 720 \"{pipePath}\"";
+            // The ffplay window keeps its title bar (SDL only re-lays out the picture when it
+            // treats the window as resizable) and is titled "AirPlay"; VideoWindow strips the
+            // caption styles after reparenting it via SetParent.
+            // 不能传 -x/-y：ffplay 会让窗口停留在按初始尺寸排版的状态，画面小且偏移。
+            // 也不能传 -noborder：无边框窗口被 SDL 视为不可缩放，之后由宿主 SetWindowPos
+            // 设置的尺寸会被 SDL 还原（客户区不变），画面永远无法重新适配窗口。
+            // 这里用默认带标题栏的窗口，嵌入时再由 VideoWindow 去掉标题栏样式。
+            var ffplayArgs = $"-f h264 -probesize 32768 -analyzeduration 0 -flags low_delay -framedrop -avioflags direct -vf setpts=0 -window_title \"AirPlay\" \"{pipePath}\"";
 
             try
             {
