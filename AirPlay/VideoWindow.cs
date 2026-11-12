@@ -65,18 +65,6 @@ namespace AirPlay
         private static IntPtr _playerHwnd = IntPtr.Zero;
 
         /// <summary>
-        /// Raised on the UI thread when the user closes (hides) the video window.
-        /// The ffplay process stays alive; the receiver should pause the mirroring stream.
-        /// </summary>
-        public static event EventHandler? Hidden;
-
-        /// <summary>
-        /// Raised on the UI thread when the video window is shown again from the tray icon,
-        /// so the receiver can resume the mirroring stream.
-        /// </summary>
-        public static event EventHandler? Shown;
-
-        /// <summary>
         /// Creates the (still hidden) borderless window. Must run on the WinForms UI thread.
         /// </summary>
         public static void Initialize()
@@ -131,9 +119,6 @@ namespace AirPlay
                         if (_playerHwnd == IntPtr.Zero || form.IsDisposed || form.Disposing) return;
                         form.Show();
                         form.Activate();
-
-                        // 从托盘重新显示：通知接收端继续投屏。
-                        Shown?.Invoke(null, EventArgs.Empty);
                     }
                     catch
                     {
@@ -691,6 +676,10 @@ namespace AirPlay
                 _allowRealClose = true;
             }
 
+            /// <summary>
+            /// 关闭（隐藏）窗口但保留 ffplay 进程与投屏会话；帧仍持续写入管道，
+            /// 因此托盘左键重新显示时画面是实时的。
+            /// </summary>
             private void RequestClose()
             {
                 try
@@ -699,18 +688,6 @@ namespace AirPlay
                 }
                 catch
                 {
-                }
-
-                // 只隐藏窗口、保留 ffplay 进程，通知接收端暂停投屏；托盘左键点击可恢复。
-                try
-                {
-                    Hidden?.Invoke(null, EventArgs.Empty);
-                }
-                catch (Exception ex)
-                {
-                    // #region agent log
-                    DebugSessionLog.Write("V1", "VideoWindow.RequestClose", "Hidden handler failed", new { error = ex.GetType().Name, message = ex.Message });
-                    // #endregion
                 }
             }
         }
