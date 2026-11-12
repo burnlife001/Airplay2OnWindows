@@ -19,7 +19,7 @@ namespace AirPlay.Listeners
         private static int _nextListenerId;
         private readonly ushort _port;
         private readonly TcpListener _listener;
-        private readonly ConcurrentDictionary<string, Task> _connections;
+        private readonly ConcurrentDictionary<string, TcpClient> _connections;
         private readonly bool _rawData = false;
         private readonly CancellationTokenSource _cancellationTokenSource;
         private Task _acceptTask;
@@ -32,7 +32,7 @@ namespace AirPlay.Listeners
             _port = port;
             _rawData = rawData;
             _listener = new TcpListener(IPAddress.Any, _port);
-            _connections = new ConcurrentDictionary<string, Task>();
+            _connections = new ConcurrentDictionary<string, TcpClient>();
 
             _cancellationTokenSource = new CancellationTokenSource();
         }
@@ -62,6 +62,22 @@ namespace AirPlay.Listeners
             {
                 _cancellationTokenSource.Cancel();
                 _listener.Stop();
+
+                // 关闭所有已建连的客户端：否则客户端处理线程会一直阻塞在同步 stream.Read 上，
+                // socket 也不会释放（StopAsync 之后这些线程并不在 _acceptTask 里）。
+                foreach (var connection in _connections)
+                {
+                    try
+                    {
+                        connection.Value.Close();
+                        DebugSessionLog.Write("H1", "BaseTcpListener.cs:StopAsync", "Client closed on stop", new { listenerId = ListenerId, port = _port, remote = connection.Key });
+                    }
+                    catch (Exception ex)
+                    {
+                        DebugSessionLog.Write("H1", "BaseTcpListener.cs:StopAsync", "Client close failed", new { listenerId = ListenerId, port = _port, remote = connection.Key, error = ex.GetType().Name, message = ex.Message });
+                    }
+                }
+                _connections.Clear();
             }
             catch (Exception ex)
             {
@@ -99,9 +115,9 @@ namespace AirPlay.Listeners
 
                     // 客户端处理里是同步阻塞的 stream.Read，必须放到线程池执行：
                     // 否则 accept 线程会卡在读某个长连接上，Stop() 之后 _acceptTask 永不结束，进程退不出去。
-                    var task = Task.Run(() => HandleClientAsync(client, cancellationToken));
+                    _ = Task.Run(() => HandleClientAsync(client, cancellationToken));
 
-                    if (!_connections.TryAdd(remoteEndpoint, task))
+                    if (!_connections.TryAdd(remoteEndpoint, client))
                     {
                         client.Close();
                     }
@@ -127,9 +143,10 @@ namespace AirPlay.Listeners
 
         private async Task HandleClientAsync(TcpClient client, CancellationToken cancellationToken)
         {
+            string remoteEndpoint = null;
             try
             {
-                var remoteEndpoint = client.Client.RemoteEndPoint.ToString();
+                remoteEndpoint = client.Client.RemoteEndPoint.ToString();
                 var stream = client.GetStream();
                 // #region agent log
                 DebugSessionLog.Write("H5", "BaseTcpListener.cs:HandleClientAsync", "Client connected", new { listenerId = ListenerId, port = _port, remote = remoteEndpoint, rawData = _rawData });
@@ -151,12 +168,27 @@ namespace AirPlay.Listeners
                 }
 
                 Console.WriteLine($"Client disconnected: {remoteEndpoint}");
-
-                _connections.Remove(remoteEndpoint, out _);
             }
             catch (System.Exception ex)
             {
                 Console.WriteLine(ex);
+            }
+            finally
+            {
+                // 无论正常结束还是异常，都要从连接表移除并关闭 socket，避免逐次泄漏。
+                if (remoteEndpoint != null)
+                {
+                    _connections.TryRemove(remoteEndpoint, out _);
+                }
+
+                try
+                {
+                    client.Close();
+                }
+                catch (Exception ex)
+                {
+                    DebugSessionLog.Write("H5", "BaseTcpListener.cs:HandleClientAsync", "Client close failed", new { listenerId = ListenerId, port = _port, remote = remoteEndpoint, error = ex.GetType().Name, message = ex.Message });
+                }
             }
         }
 

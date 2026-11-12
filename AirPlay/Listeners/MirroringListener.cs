@@ -25,6 +25,9 @@ namespace AirPlay.Listeners
         private byte[] _og = new byte[16];
         private int _nextDecryptCount;
 
+        // 单帧负载上限：PayloadSize 完全由对端控制，必须限制，避免 new byte[] 直接 OOM。
+        private const int MaxPayloadSize = 8 * 1024 * 1024;
+
         public MirroringListener(IRtspReceiver receiver, string sessionId, ushort port) : base(port, true)
         {
             _receiver = receiver;
@@ -104,6 +107,13 @@ namespace AirPlay.Listeners
                         if (header.PayloadSize <= 0)
                         {
                             continue;
+                        }
+
+                        if (header.PayloadSize > MaxPayloadSize)
+                        {
+                            // 超限视为流被污染：断开该连接，交给 finally 释放镜像状态。
+                            DebugSessionLog.Write("H7", "MirroringListener.OnRawReceivedAsync", "payload size exceeds limit, closing connection", new { sessionId = _sessionId, listenerId = ListenerId, payloadSize = header.PayloadSize, payloadType = header.PayloadType, limit = MaxPayloadSize });
+                            return;
                         }
 
                         try
@@ -277,6 +287,26 @@ namespace AirPlay.Listeners
 
         private void ProcessSpsPps(byte[] payload, out byte[] spsPps)
         {
+            spsPps = null;
+
+            // 最小长度：8 字节 AVCDecoderConfigurationRecord + 2 字节 pps 长度 + 至少 1 字节 pps。
+            if (payload == null || payload.Length < 11)
+            {
+                return;
+            }
+
+            int spsLen = ((payload[6] & 255) << 8) + (payload[7] & 255);
+            if (spsLen <= 0 || payload.Length < 11 + spsLen)
+            {
+                return;
+            }
+
+            int ppsLen = ((payload[spsLen + 9] & 0xFF) << 8) + (payload[spsLen + 10] & 0xFF);
+            if (ppsLen <= 0 || payload.Length < 11 + spsLen + ppsLen)
+            {
+                return;
+            }
+
             var h264 = new H264Codec();
 
             h264.Version = payload[0];
@@ -285,13 +315,13 @@ namespace AirPlay.Listeners
             h264.Level = payload[3];
             h264.Reserved6AndNal = payload[4];
             h264.Reserved3AndSps = payload[5];
-            h264.LengthOfSps = (short)(((payload[6] & 255) << 8) + (payload[7] & 255));
+            h264.LengthOfSps = (short)spsLen;
 
             var sequence = new byte[h264.LengthOfSps];
             Array.Copy(payload, 8, sequence, 0, h264.LengthOfSps);
             h264.SequenceParameterSet = sequence;
             h264.NumberOfPps = payload[h264.LengthOfSps + 8];
-            h264.LengthOfPps = (short)(((payload[h264.LengthOfSps + 9] & 0xFF) << 8) + (payload[h264.LengthOfSps + 10] & 0xFF));
+            h264.LengthOfPps = (short)ppsLen;
 
             var picture = new byte[h264.LengthOfPps];
             Array.Copy(payload, h264.LengthOfSps + 11, picture, 0, h264.LengthOfPps);

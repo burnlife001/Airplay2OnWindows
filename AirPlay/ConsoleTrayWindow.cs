@@ -305,7 +305,16 @@ namespace AirPlay
                     hasExitHandler = _requestExit != null,
                 }, runId: "post-fix");
                 // #endregion
-                _requestExit?.Invoke();
+                // 回调运行在 OS 控制台线程：_requestExit 绑定的 TrayApplicationContext.RequestExit
+                // 负责 marshal 回 UI 线程（ExitThread 只能在 UI 线程执行），这里只保证不把异常抛回原生回调。
+                try
+                {
+                    _requestExit?.Invoke();
+                }
+                catch (Exception ex)
+                {
+                    DebugSessionLog.Write("H5", "ConsoleTrayWindow.OnConsoleCtrl", "request exit failed", new { ctrlType = ctrlType.ToString(), error = ex.GetType().Name, message = ex.Message }, runId: "post-fix");
+                }
                 return true;
             }
 

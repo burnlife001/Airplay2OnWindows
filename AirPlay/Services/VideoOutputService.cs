@@ -115,14 +115,16 @@ namespace AirPlay.Services
                     File.Delete(UNIX_PIPE_PATH);
                 }
 
-                var mkfifo = Process.Start(new ProcessStartInfo
+                using (var mkfifo = Process.Start(new ProcessStartInfo
                 {
                     FileName = "mkfifo",
                     Arguments = UNIX_PIPE_PATH,
                     UseShellExecute = false,
                     CreateNoWindow = true
-                });
-                mkfifo?.WaitForExit();
+                }))
+                {
+                    mkfifo?.WaitForExit();
+                }
 
                 Console.WriteLine($"Video FIFO created: {UNIX_PIPE_PATH}");
 
@@ -362,7 +364,7 @@ namespace AirPlay.Services
                     RedirectStandardOutput = true,
                     CreateNoWindow = true
                 };
-                var proc = Process.Start(psi);
+                using var proc = Process.Start(psi);
                 var output = proc?.StandardOutput.ReadToEnd()?.Trim();
                 proc?.WaitForExit();
                 var firstLine = output?.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim();
@@ -604,6 +606,8 @@ namespace AirPlay.Services
         /// </summary>
         public void WriteFrame(H264Data data)
         {
+            bool disconnected = false;
+
             lock (_lock)
             {
                 if (_disposed) return;
@@ -671,12 +675,37 @@ namespace AirPlay.Services
                 {
                     Console.WriteLine("Video player disconnected");
                     _connected = false;
-                    OnStatusChanged?.Invoke(this, "disconnected");
+                    disconnected = true;
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"Video write error: {ex.Message}");
                 }
+            }
+
+            // 回调必须在锁外触发：订阅者可能调用 StopMirroring/Dispose（Monitor 可重入），
+            // 持锁回调会让正在写入的管道被释放。
+            if (disconnected)
+            {
+                NotifyStatusChanged("disconnected");
+            }
+        }
+
+        private void NotifyStatusChanged(string status)
+        {
+            var handler = OnStatusChanged;
+            if (handler == null)
+            {
+                return;
+            }
+
+            try
+            {
+                handler(this, status);
+            }
+            catch (Exception ex)
+            {
+                DebugSessionLog.Write("H6", "VideoOutputService.NotifyStatusChanged", "status callback failed", new { status, error = ex.GetType().Name, message = ex.Message });
             }
         }
 

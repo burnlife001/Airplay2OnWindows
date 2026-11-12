@@ -75,14 +75,17 @@ namespace AirPlay
             private readonly NotifyIcon _notifyIcon;
             private readonly Icon _trayIcon;
             private readonly CancellationTokenSource _cts;
-            private readonly SynchronizationContext? _uiContext;
+            // 在 UI 线程创建并持有句柄的隐藏控件：用它把跨线程退出请求派发回 UI 线程，
+            // 不依赖构造时捕获的 SynchronizationContext（Application.Run 之前可能为 null）。
+            private readonly Control _uiMarshal;
 
             public NotifyIcon NotifyIcon => _notifyIcon;
 
             public TrayApplicationContext(CancellationTokenSource cts)
             {
                 _cts = cts;
-                _uiContext = SynchronizationContext.Current;
+                _uiMarshal = new Control();
+                _ = _uiMarshal.Handle;
 
                 VideoWindow.Initialize();
 
@@ -115,10 +118,20 @@ namespace AirPlay
 
             public void RequestExit()
             {
-                if (_uiContext != null && _uiContext != SynchronizationContext.Current)
+                // 从非 UI 线程（例如控制台 Ctrl+Close 处理线程）进入时，必须先派发回 UI 线程，
+                // 否则 ExitThread 运行时不在 UI 线程，Application.Run 不会退出。
+                if (_uiMarshal.IsHandleCreated && _uiMarshal.InvokeRequired)
                 {
-                    _uiContext.Post(_ => ExitApplication(), null);
-                    return;
+                    try
+                    {
+                        _uiMarshal.BeginInvoke(new Action(ExitApplication));
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        // 句柄已销毁等情况下安全降级：直接在本线程执行原有退出逻辑。
+                        DebugSessionLog.Write("H6", "WindowsTrayHost.RequestExit", "marshal to UI thread failed", new { error = ex.GetType().Name, message = ex.Message });
+                    }
                 }
 
                 ExitApplication();
@@ -151,6 +164,7 @@ namespace AirPlay
                 {
                     _notifyIcon.Dispose();
                     _trayIcon.Dispose();
+                    _uiMarshal.Dispose();
                 }
 
                 base.Dispose(disposing);

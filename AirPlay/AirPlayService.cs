@@ -31,6 +31,22 @@ namespace AirPlay
             _dConfig = dConfig?.Value ?? throw new ArgumentNullException(nameof(dConfig));
         }
 
+        private void ScheduleHandleFfplayExited()
+        {
+            // fire-and-forget 必须自己兜住异常，否则镜像状态释放失败会被静默吞掉。
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await HandleFfplayExitedAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    DebugSessionLog.Write("H7", "AirPlayService.HandleFfplayExited", "release mirroring after ffplay exit failed", new { error = ex.GetType().Name, message = ex.Message });
+                }
+            });
+        }
+
         private async Task HandleFfplayExitedAsync()
         {
             if (_airPlayReceiver is not AirPlayReceiver receiver)
@@ -117,7 +133,7 @@ namespace AirPlay
 
             // Initialize video output service (will be started/stopped per mirroring session)
             _videoOutput = new VideoOutputService();
-            _videoOutput.FfplayExited += (_, _) => _ = HandleFfplayExitedAsync();
+            _videoOutput.FfplayExited += (_, _) => ScheduleHandleFfplayExited();
             Console.WriteLine("Video output service ready (will auto-launch ffplay when mirroring starts)");
 
             await _airPlayReceiver.StartListeners(cancellationToken);

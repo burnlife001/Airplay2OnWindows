@@ -88,21 +88,22 @@ namespace AirPlay.Models
             if(_headers.ContainsKey("Content-Length"))
             {
                 var contentLength = _headers.GetValue<int>("Content-Length");
+                // Some request can have body w/ '\r\n' chars
+                // Use full hex request to extract body based on 'Content-Length'
+                var requestBytes = _hex.HexToBytes();
+
+                if (contentLength < 0 || contentLength > requestBytes.Length)
+                {
+                    // 非法的 Content-Length：不抛异常，标记请求无效并让上层照常处理。
+                    _valid = false;
+                    _rawBody = new byte[0];
+                    return;
+                }
+
                 if(contentLength > 0)
                 {
-                    // Some request can have body w/ '\r\n' chars
-                    // Use full hex request to extract body based on 'Content-Length'
-                    var requestBytes = _hex.HexToBytes();
                     var bodyBytes = requestBytes.Skip(requestBytes.Length - contentLength).ToArray();
-
-                    if (contentLength == bodyBytes.Length)
-                    {
-                        _rawBody = bodyBytes;
-                    }
-                    else
-                    {
-                        throw new Exception("wrong body length");
-                    }
+                    _rawBody = bodyBytes;
                 }
                 else
                 {
