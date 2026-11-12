@@ -65,9 +65,16 @@ namespace AirPlay
         private static IntPtr _playerHwnd = IntPtr.Zero;
 
         /// <summary>
-        /// Raised on the UI thread when the user clicks the close button of the video window.
+        /// Raised on the UI thread when the user closes (hides) the video window.
+        /// The ffplay process stays alive; the receiver should pause the mirroring stream.
         /// </summary>
-        public static event EventHandler? CloseRequested;
+        public static event EventHandler? Hidden;
+
+        /// <summary>
+        /// Raised on the UI thread when the video window is shown again from the tray icon,
+        /// so the receiver can resume the mirroring stream.
+        /// </summary>
+        public static event EventHandler? Shown;
 
         /// <summary>
         /// Creates the (still hidden) borderless window. Must run on the WinForms UI thread.
@@ -124,6 +131,9 @@ namespace AirPlay
                         if (_playerHwnd == IntPtr.Zero || form.IsDisposed || form.Disposing) return;
                         form.Show();
                         form.Activate();
+
+                        // 从托盘重新显示：通知接收端继续投屏。
+                        Shown?.Invoke(null, EventArgs.Empty);
                     }
                     catch
                     {
@@ -691,14 +701,15 @@ namespace AirPlay
                 {
                 }
 
+                // 只隐藏窗口、保留 ffplay 进程，通知接收端暂停投屏；托盘左键点击可恢复。
                 try
                 {
-                    CloseRequested?.Invoke(null, EventArgs.Empty);
+                    Hidden?.Invoke(null, EventArgs.Empty);
                 }
                 catch (Exception ex)
                 {
                     // #region agent log
-                    DebugSessionLog.Write("V1", "VideoWindow.RequestClose", "CloseRequested handler failed", new { error = ex.GetType().Name, message = ex.Message });
+                    DebugSessionLog.Write("V1", "VideoWindow.RequestClose", "Hidden handler failed", new { error = ex.GetType().Name, message = ex.Message });
                     // #endregion
                 }
             }

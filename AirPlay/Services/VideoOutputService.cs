@@ -44,6 +44,11 @@ namespace AirPlay.Services
 
         private bool _ffplayExitHandled;
 
+        // 投屏窗口关闭后暂停投屏：只丢弃帧、不拆会话，ffplay 保持存活。
+        private bool _paused;
+        // 恢复投屏后先丢帧，直到拿到下一个 IDR，避免参考链断裂导致花屏。
+        private bool _resumeAwaitKeyFrame;
+
         /// <summary>
         /// Start a new mirroring session: create the pipe, launch ffplay, and wait for connection.
         /// Can be called multiple times across mirroring sessions.
@@ -97,8 +102,7 @@ namespace AirPlay.Services
                 Console.WriteLine($"Video pipe created: \\\\.\\pipe\\{PIPE_NAME}");
 
 #if USE_WINDOWS_TRAY
-                // Close button of the embedded video window stops the current mirroring session.
-                // The session itself is released later via FfplayExited -> AirPlayService.HandleFfplayExitedAsync.
+                // 关闭投屏窗口只暂停投屏（ffplay 保活），托盘左键重新显示时恢复。
                 SubscribeVideoWindowCloseRequest();
 #endif
 
@@ -337,30 +341,43 @@ namespace AirPlay.Services
             if (_closeRequestedSubscribed) return;
 
             _closeRequestedSubscribed = true;
-            VideoWindow.CloseRequested += OnVideoWindowCloseRequested;
+            VideoWindow.Hidden += OnVideoWindowHidden;
+            VideoWindow.Shown += OnVideoWindowShown;
         }
 
-        private void OnVideoWindowCloseRequested(object? sender, EventArgs e)
+        /// <summary>
+        /// 关闭按钮只隐藏窗口：ffplay 保持存活，这里只停止往管道写帧来暂停投屏。
+        /// </summary>
+        private void OnVideoWindowHidden(object? sender, EventArgs e)
         {
             // #region agent log
-            DebugSessionLog.Write("V1", "VideoOutputService.OnVideoWindowCloseRequested", "close requested from video window", null);
+            DebugSessionLog.Write("V1", "VideoOutputService.OnVideoWindowHidden", "video window hidden, pausing", new { hasFfplay = _ffplayProcess != null });
             // #endregion
 
-            // This runs on the WinForms UI thread. Never block it: stop mirroring on the thread pool
-            // (StopMirroring kills ffplay and may wait for it to exit).
-            Task.Run(() =>
+            lock (_lock)
             {
-                try
-                {
-                    StopMirroring();
-                }
-                catch (Exception ex)
-                {
-                    // #region agent log
-                    DebugSessionLog.Write("V1", "VideoOutputService.OnVideoWindowCloseRequested", "StopMirroring failed", new { error = ex.GetType().Name, message = ex.Message });
-                    // #endregion
-                }
-            });
+                _paused = true;
+                _resumeAwaitKeyFrame = false;
+            }
+        }
+
+        /// <summary>
+        /// 托盘重新显示窗口后恢复投屏。暂停期间丢掉的帧破坏了参考链，先等到下一个 IDR 再写。
+        /// </summary>
+        private void OnVideoWindowShown(object? sender, EventArgs e)
+        {
+            if (!_paused) return;
+
+            lock (_lock)
+            {
+                if (!_paused) return;
+                _paused = false;
+                _resumeAwaitKeyFrame = true;
+            }
+
+            // #region agent log
+            DebugSessionLog.Write("V1", "VideoOutputService.OnVideoWindowShown", "video window shown, resuming", null);
+            // #endregion
         }
 
         private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
@@ -501,6 +518,8 @@ namespace AirPlay.Services
             DebugSessionLog.Write("H6", "VideoOutputService.CleanupSession", "cts disposed", null);
 
             _connected = false;
+            _paused = false;
+            _resumeAwaitKeyFrame = false;
             _pendingFrames.Clear();
             _hasReceivedKeyFrame = false;
 #if USE_WINDOWS_TRAY
@@ -649,6 +668,16 @@ namespace AirPlay.Services
                 if (data.Data == null || data.Length <= 0) return;
 
                 bool isKeyFrame = data.FrameType == 5;
+
+                // 窗口关闭期间暂停投屏：直接丢帧，会话与 ffplay 都保持不变。
+                if (_paused) return;
+
+                // 恢复投屏后先丢帧直到下一个 IDR，避免解码器参考链断裂。
+                if (_resumeAwaitKeyFrame)
+                {
+                    if (!isKeyFrame) return;
+                    _resumeAwaitKeyFrame = false;
+                }
 
 #if USE_WINDOWS_TRAY
                 // First keyframe of the session carries the real video resolution: size the window to it.
