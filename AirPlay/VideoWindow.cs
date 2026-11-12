@@ -1,6 +1,7 @@
 #if USE_WINDOWS_TRAY
 
 using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -27,7 +28,12 @@ namespace AirPlay
         private const int HtCaption = 2;
 
         private const int WmNcHitTest = 0x0084;
+        private const int WmEnterSizeMove = 0x0231;
+        private const int WmExitSizeMove = 0x0232;
         private const int WsThickFrame = 0x00040000;
+
+        // 拖动缩放期间重设播放器的最小间隔（毫秒）。
+        private const int ResizeThrottleMs = 60;
 
         private const int GwlStyle = -16;
         private const int WsChild = 0x40000000;
@@ -43,6 +49,9 @@ namespace AirPlay
 
         private static VideoForm? _form;
         private static IntPtr _playerHwnd = IntPtr.Zero;
+
+        // 已经应用到 ffplay 子窗口的区域，内容不变时不再跨进程重设，避免拖动时无谓重建交换链。
+        private static Rectangle _lastPlayerBounds;
 
         /// <summary>
         /// Raised on the UI thread when the user clicks the close button of the video window.
@@ -142,6 +151,7 @@ namespace AirPlay
             try
             {
                 _playerHwnd = playerHwnd;
+                _lastPlayerBounds = Rectangle.Empty;
 
                 ShowWindow(playerHwnd, SwHide);
                 SetParent(playerHwnd, form.Handle);
@@ -264,6 +274,7 @@ namespace AirPlay
             }
 
             _playerHwnd = IntPtr.Zero;
+            _lastPlayerBounds = Rectangle.Empty;
             try
             {
                 form.Hide();
@@ -285,6 +296,7 @@ namespace AirPlay
             var form = _form;
             _form = null;
             _playerHwnd = IntPtr.Zero;
+            _lastPlayerBounds = Rectangle.Empty;
             if (form == null) return;
 
             try
@@ -354,6 +366,8 @@ namespace AirPlay
         {
             private readonly Label? _closeButton;
             private bool _allowRealClose;
+            private readonly Stopwatch _resizeClock = new Stopwatch();
+            private bool _inSizeMove;
             public VideoForm()
             {
                 FormBorderStyle = FormBorderStyle.None;
@@ -390,27 +404,35 @@ namespace AirPlay
             /// </summary>
             public void LayoutChildren()
             {
+                UpdateCloseButton();
+                UpdatePlayerBounds();
+            }
+
+            private void UpdateCloseButton()
+            {
                 var client = ClientRectangle;
                 if (client.Width <= 0 || client.Height <= 0) return;
+                if (_closeButton == null) return;
 
-                int strip = StripPx;
                 int close = ClosePx;
+                _closeButton.Size = new Size(close, close);
+                _closeButton.Location = new Point(Math.Max(0, client.Width - close), 0);
+            }
 
-                if (_closeButton != null)
-                {
-                    _closeButton.Size = new Size(close, close);
-                    _closeButton.Location = new Point(Math.Max(0, client.Width - close), 0);
-                }
-
+            private void UpdatePlayerBounds()
+            {
                 var player = _playerHwnd;
-                if (player != IntPtr.Zero)
-                {
-                    int videoHeight = client.Height - strip;
-                    if (client.Width > 0 && videoHeight > 0)
-                    {
-                        MoveWindow(player, 0, strip, client.Width, videoHeight, true);
-                    }
-                }
+                if (player == IntPtr.Zero) return;
+
+                var client = ClientRectangle;
+                int strip = StripPx;
+                int videoHeight = client.Height - strip;
+                if (client.Width <= 0 || videoHeight <= 0) return;
+
+                var target = new Rectangle(0, strip, client.Width, videoHeight);
+                if (target == _lastPlayerBounds) return;
+                _lastPlayerBounds = target;
+                MoveWindow(player, target.X, target.Y, target.Width, target.Height, true);
             }
 
             private int StripPx => ScaleForDpi(DragStripHeight, DeviceDpi);
@@ -432,7 +454,17 @@ namespace AirPlay
             protected override void OnResize(EventArgs e)
             {
                 base.OnResize(e);
-                LayoutChildren();
+                UpdateCloseButton();
+
+                if (_inSizeMove)
+                {
+                    // 拖动时按固定间隔节流：每个像素都同步 MoveWindow 会让 ffplay 反复重建
+                    // 交换链，拖动明显卡顿；松手后由 WM_EXITSIZEMOVE 补一次最终对齐。
+                    if (_resizeClock.IsRunning && _resizeClock.ElapsedMilliseconds < ResizeThrottleMs) return;
+                    _resizeClock.Restart();
+                }
+
+                UpdatePlayerBounds();
             }
 
             protected override void WndProc(ref Message m)
@@ -451,6 +483,18 @@ namespace AirPlay
                         m.Result = (IntPtr)HtCaption;
                         return;
                     }
+                }
+
+                if (m.Msg == WmEnterSizeMove)
+                {
+                    _inSizeMove = true;
+                    _resizeClock.Restart();
+                }
+                else if (m.Msg == WmExitSizeMove)
+                {
+                    _inSizeMove = false;
+                    _resizeClock.Reset();
+                    UpdatePlayerBounds();
                 }
 
                 base.WndProc(ref m);
