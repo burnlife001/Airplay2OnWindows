@@ -311,14 +311,28 @@ namespace AirPlay
                 // #endregion
             }
 
+            // 与回调（OnPCMDataReceived/OnSetVolumeReceived/RecreateAudioOutput）同一把锁做交换，
+            // 只在锁内取引用并置 null，实际 Dispose 放到锁外，避免持锁期间 Dispose 触发回调造成死锁。
             DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "audio Dispose enter", new { hasAudioOutput = _audioOutput != null });
-            _audioOutput?.Dispose();
-            _audioOutput = null;
+            AudioOutputService audioOutput;
+            lock (_audioOutputLock)
+            {
+                audioOutput = _audioOutput;
+                _audioOutput = null;
+            }
+            audioOutput?.Dispose();
             DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "audio Dispose exit", new { elapsedMs = stopwatch.ElapsedMilliseconds });
 
+            // VideoOutputService.Dispose 可能等到 ffplay 退出并触发 FfplayExited -> OnMirroringStopped 回调，
+            // 因此同样只在锁内交换引用，锁外 Dispose。
             DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "video Dispose enter", new { hasVideoOutput = _videoOutput != null });
-            _videoOutput?.Dispose();
-            _videoOutput = null;
+            VideoOutputService videoOutput;
+            lock (_videoOutputLock)
+            {
+                videoOutput = _videoOutput;
+                _videoOutput = null;
+            }
+            videoOutput?.Dispose();
             DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "video Dispose exit", new { elapsedMs = stopwatch.ElapsedMilliseconds });
 
 #if DUMP
@@ -345,11 +359,22 @@ namespace AirPlay
 
         public void Dispose()
         {
-            _audioOutput?.Dispose();
-            _audioOutput = null;
+            // 与 StopAsyncCore 一致：锁内交换引用，锁外 Dispose，避免回调持有对象时被释放或互等。
+            AudioOutputService audioOutput;
+            lock (_audioOutputLock)
+            {
+                audioOutput = _audioOutput;
+                _audioOutput = null;
+            }
+            audioOutput?.Dispose();
 
-            _videoOutput?.Dispose();
-            _videoOutput = null;
+            VideoOutputService videoOutput;
+            lock (_videoOutputLock)
+            {
+                videoOutput = _videoOutput;
+                _videoOutput = null;
+            }
+            videoOutput?.Dispose();
 
             if (_airPlayReceiver is IDisposable disposable)
             {

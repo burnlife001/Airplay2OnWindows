@@ -78,7 +78,11 @@ namespace AirPlay.Listeners
 
                         if ((headerBuffer[0] == 80 && headerBuffer[1] == 79 && headerBuffer[2] == 83 && headerBuffer[3] == 84) || (headerBuffer[0] == 71 && headerBuffer[1] == 69 && headerBuffer[2] == 84))
                         {
-                            // Request is POST or GET (skip)
+                            // Request is POST or GET: 必须完整消费头部与 body，否则残留字节会让后续二进制帧解析失步。
+                            if (!await ConsumeHttpRequestAsync(stream, headerBuffer, 4, cancellationToken).ConfigureAwait(false))
+                            {
+                                return;
+                            }
                             continue;
                         }
 
@@ -179,6 +183,80 @@ namespace AirPlay.Listeners
                     DebugSessionLog.Write("H7", "MirroringListener.OnRawReceivedAsync", "raw mirroring cleanup failed", new { sessionId = _sessionId, listenerId = ListenerId, error = ex.GetType().Name, message = ex.Message });
                 }
             }
+        }
+
+        // 单条 HTTP 请求（头部 + body）上限：长度完全由对端控制，必须有界，避免无界内存/阻塞。
+        private const int MaxHttpRequestSize = 64 * 1024;
+
+        /// <summary>
+        /// 完整消费一条 HTTP 请求：逐字节读到空行结束的头部，再按 Content-Length 丢弃 body。
+        /// 返回 false 表示连接已不可用（EOF/超限/取消），调用方应结束读取循环。
+        /// 头部逐字节读取是为了不越界多读，避免吃掉后续二进制帧的开头。
+        /// </summary>
+        private async Task<bool> ConsumeHttpRequestAsync(NetworkStream stream, byte[] prefix, int prefixLength, CancellationToken cancellationToken)
+        {
+            var header = new byte[MaxHttpRequestSize];
+            Array.Copy(prefix, header, prefixLength);
+            int count = prefixLength;
+
+            while (true)
+            {
+                if (count >= header.Length)
+                {
+                    DebugSessionLog.Write("H7", "MirroringListener.ConsumeHttpRequestAsync", "http request header exceeds limit, closing connection", new { sessionId = _sessionId, listenerId = ListenerId, limit = MaxHttpRequestSize });
+                    return false;
+                }
+
+                int read = await stream.ReadAsync(header, count, 1, cancellationToken).ConfigureAwait(false);
+                if (read <= 0)
+                {
+                    return false;
+                }
+                count += read;
+
+                if (count >= 4 &&
+                    header[count - 4] == (byte)'\r' && header[count - 3] == (byte)'\n' &&
+                    header[count - 2] == (byte)'\r' && header[count - 1] == (byte)'\n')
+                {
+                    break;
+                }
+            }
+
+            // 头部已结束（count 处）；Content-Length 缺失或非法按 0 处理。
+            int contentLength = 0;
+            var headerText = Encoding.ASCII.GetString(header, 0, count);
+            foreach (var line in headerText.Split(new[] { "\r\n" }, StringSplitOptions.None))
+            {
+                if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!int.TryParse(line.Substring("Content-Length:".Length).Trim(), out contentLength))
+                    {
+                        contentLength = 0;
+                    }
+                    break;
+                }
+            }
+
+            if (contentLength < 0 || contentLength > MaxHttpRequestSize)
+            {
+                DebugSessionLog.Write("H7", "MirroringListener.ConsumeHttpRequestAsync", "http body length exceeds limit, closing connection", new { sessionId = _sessionId, listenerId = ListenerId, contentLength, limit = MaxHttpRequestSize });
+                return false;
+            }
+
+            // 按剩余长度精确丢弃 body，不多读，保证下一条二进制帧起始位置正确。
+            var discard = new byte[8192];
+            int remaining = contentLength;
+            while (remaining > 0)
+            {
+                int read = await stream.ReadAsync(discard, 0, Math.Min(discard.Length, remaining), cancellationToken).ConfigureAwait(false);
+                if (read <= 0)
+                {
+                    return false;
+                }
+                remaining -= read;
+            }
+
+            return true;
         }
 
         private void DecryptVideoData(byte[] videoData, out byte[] output)

@@ -26,6 +26,10 @@ namespace AirPlay.Listeners
 
         public int ListenerId { get; }
 
+        // 累积缓冲上限（对端可控）：单条请求 64KB，一次读取周期累积的原始数据 1MB，超限断开连接。
+        private const int MaxRequestBytes = 64 * 1024;
+        private const int MaxRawBytes = 1024 * 1024;
+
         public BaseTcpListener(ushort port, bool rawData = false)
         {
             ListenerId = Interlocked.Increment(ref _nextListenerId);
@@ -204,7 +208,7 @@ namespace AirPlay.Listeners
             if (client.Connected && stream.CanRead)
             {
                 int retBytes = 0;
-                string raw = string.Empty;
+                var rawBuilder = new StringBuilder();
 
                 do
                 {
@@ -213,7 +217,15 @@ namespace AirPlay.Listeners
                         var buffer = new byte[1024];
                         var readCount = stream.Read(buffer, 0, buffer.Length);
                         retBytes += readCount;
-                        raw += string.Join(string.Empty, buffer.Take(readCount).Select(b => b.ToString("X2")));
+
+                        if (retBytes > MaxRawBytes)
+                        {
+                            DebugSessionLog.Write("H1", "BaseTcpListener.cs:ReadFormattedAsync", "raw data exceeds limit, closing connection", new { listenerId = ListenerId, port = _port, bytes = retBytes, limit = MaxRawBytes });
+                            return;
+                        }
+
+                        // Convert.ToHexString 为线性实现，避免逐字节 LINQ + 字符串拼接的 O(n²) 开销
+                        rawBuilder.Append(Convert.ToHexString(buffer, 0, readCount));
 
                         // Wait for other possible data
                         await Task.Delay(10);
@@ -222,6 +234,7 @@ namespace AirPlay.Listeners
                 } while (client.Connected && stream.DataAvailable);
 
                 // Now we have all data inside raw var
+                var raw = rawBuilder.ToString();
                 // Make sure the socket is still connected (if it closed we don't really care about the message because we can not reply)
                 if (client.Connected)
                 {
@@ -257,18 +270,18 @@ namespace AirPlay.Listeners
                     var requests = new List<Request>();
                     for (int i = 0; i < m.Count; i++)
                     {
-                        if (i + 1 < m.Count)
+                        var hexReq = i + 1 < m.Count
+                            ? raw.Substring(m[i].Index, m[i + 1].Index - m[i].Index)
+                            : raw.Substring(m[i].Index);
+
+                        // 单条请求上限（十六进制字符串长度 = 字节数 * 2）
+                        if (hexReq.Length > MaxRequestBytes * 2)
                         {
-                            var hexReq = raw.Substring(m[i].Index, m[i + 1].Index - m[i].Index);
-                            var req = new Request(hexReq);
-                            requests.Add(req);
+                            DebugSessionLog.Write("H1", "BaseTcpListener.cs:ReadFormattedAsync", "request exceeds limit, closing connection", new { listenerId = ListenerId, port = _port, bytes = hexReq.Length / 2, limit = MaxRequestBytes });
+                            return;
                         }
-                        else
-                        {
-                            var hexReq = raw.Substring(m[i].Index);
-                            var req = new Request(hexReq);
-                            requests.Add(req);
-                        }
+
+                        requests.Add(new Request(hexReq));
                     }
 
                     foreach (var request in requests)
