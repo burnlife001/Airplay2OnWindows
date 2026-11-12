@@ -438,26 +438,39 @@ namespace AirPlay.Services
 
         private void StopFfplay()
         {
-            if (_ffplayProcess == null)
+            var process = _ffplayProcess;
+            if (process == null)
             {
                 DebugSessionLog.Write("H6", "VideoOutputService.StopFfplay", "no ffplay process", null);
                 return;
             }
 
+            // 先摘下字段并退订 Exited：Kill 之后的 WaitForExit 会在当前线程同步触发 Exited，
+            // 事件里的 CleanupSession 会重入本方法把进程 Dispose 掉，外层 finally 再 Dispose 就会 NRE。
+            _ffplayProcess = null;
+            try
+            {
+                process.Exited -= OnFfplayProcessExited;
+            }
+            catch (Exception ex)
+            {
+                DebugSessionLog.Write("H6", "VideoOutputService.StopFfplay", "unsubscribe Exited failed", new { error = ex.GetType().Name, message = ex.Message });
+            }
+
             int? pid = null;
             try
             {
-                pid = _ffplayProcess.Id;
+                pid = process.Id;
                 DebugSessionLog.Write("H6", "VideoOutputService.StopFfplay", "HasExited enter", new { pid });
-                var hasExited = _ffplayProcess.HasExited;
+                var hasExited = process.HasExited;
                 DebugSessionLog.Write("H6", "VideoOutputService.StopFfplay", "HasExited exit", new { pid, hasExited });
                 if (!hasExited)
                 {
                     Console.WriteLine($"Stopping ffplay (PID: {pid})...");
                     DebugSessionLog.Write("H6", "VideoOutputService.StopFfplay", "Kill enter", new { pid });
-                    _ffplayProcess.Kill();
+                    process.Kill();
                     DebugSessionLog.Write("H6", "VideoOutputService.StopFfplay", "Kill exit", new { pid });
-                    var exited = _ffplayProcess.WaitForExit(3000);
+                    var exited = process.WaitForExit(3000);
                     DebugSessionLog.Write("H6", "VideoOutputService.StopFfplay", "WaitForExit returned", new { pid, timeoutMs = 3000, exited });
                     if (!exited)
                     {
@@ -473,8 +486,7 @@ namespace AirPlay.Services
             finally
             {
                 DebugSessionLog.Write("H6", "VideoOutputService.StopFfplay", "process Dispose enter", new { pid });
-                _ffplayProcess.Dispose();
-                _ffplayProcess = null;
+                process.Dispose();
                 DebugSessionLog.Write("H6", "VideoOutputService.StopFfplay", "process Dispose exit", new { pid });
             }
         }
