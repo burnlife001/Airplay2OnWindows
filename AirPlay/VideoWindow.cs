@@ -18,26 +18,16 @@ namespace AirPlay
     internal static class VideoWindow
     {
         private const int DragStripHeight = 24;
-        private const int ResizeBorder = 8;
         private const int CloseButtonSize = 24;
         private const int DefaultWidth = 1280;
         private const int DefaultHeight = 720;
         private const int MinWidth = 320;
         private const int MinHeight = 180;
 
-        private const int WmNcHitTest = 0x0084;
-        private const int WmSetCursor = 0x0020;
-
-        private const int HtClient = 1;
         private const int HtCaption = 2;
-        private const int HtLeft = 10;
-        private const int HtRight = 11;
-        private const int HtTop = 12;
-        private const int HtTopLeft = 13;
-        private const int HtTopRight = 14;
-        private const int HtBottom = 15;
-        private const int HtBottomLeft = 16;
-        private const int HtBottomRight = 17;
+
+        private const int WmNcHitTest = 0x0084;
+        private const int WsThickFrame = 0x00040000;
 
         private const int GwlStyle = -16;
         private const int WsChild = 0x40000000;
@@ -216,16 +206,15 @@ namespace AirPlay
                 var area = Screen.FromControl(form).WorkingArea;
                 int dpi = form.DeviceDpi;
                 int strip = ScaleForDpi(DragStripHeight, dpi);
-                int border = ScaleForDpi(ResizeBorder, dpi);
                 double maxClientWidth = area.Width * 0.9;
                 double maxClientHeight = area.Height * 0.9;
-                double maxVideoWidth = maxClientWidth - border * 2;
-                double maxVideoHeight = maxClientHeight - strip - border;
+                double maxVideoWidth = maxClientWidth;
+                double maxVideoHeight = maxClientHeight - strip;
                 // Allow upscaling (up to 2x) so low-resolution streams are not shown tiny.
                 double scale = Math.Min(2.0, Math.Min(maxVideoWidth / width, maxVideoHeight / height));
 
-                int clientWidth = (int)Math.Round(width * scale) + border * 2;
-                int clientHeight = (int)Math.Round(height * scale) + strip + border;
+                int clientWidth = (int)Math.Round(width * scale);
+                int clientHeight = (int)Math.Round(height * scale) + strip;
                 clientWidth = Math.Max(MinWidth, Math.Min(clientWidth, (int)Math.Round(maxClientWidth)));
                 clientHeight = Math.Max(MinHeight, Math.Min(clientHeight, (int)Math.Round(maxClientHeight)));
 
@@ -347,33 +336,6 @@ namespace AirPlay
             return Math.Max(1, (int)Math.Round(value * dpi / 96.0));
         }
 
-        private static int HitTest(Point clientPoint, Size client, int border, int strip)
-        {
-            int width = client.Width;
-            int height = client.Height;
-
-            bool left = clientPoint.X < border;
-            bool right = clientPoint.X >= width - border;
-            bool top = clientPoint.Y < border;
-            bool bottom = clientPoint.Y >= height - border;
-
-            if (top && left) return HtTopLeft;
-            if (top && right) return HtTopRight;
-            if (bottom && left) return HtBottomLeft;
-            if (bottom && right) return HtBottomRight;
-            if (left) return HtLeft;
-            if (right) return HtRight;
-            if (top) return HtTop;
-            if (bottom) return HtBottom;
-
-            if (clientPoint.Y >= 0 && clientPoint.Y < strip)
-            {
-                return HtCaption;
-            }
-
-            return HtClient;
-        }
-
         private static IntPtr GetWindowLongPtrSafe(IntPtr hWnd, int nIndex)
         {
             return IntPtr.Size == 8
@@ -392,7 +354,6 @@ namespace AirPlay
         {
             private readonly Label? _closeButton;
             private bool _allowRealClose;
-
             public VideoForm()
             {
                 FormBorderStyle = FormBorderStyle.None;
@@ -423,17 +384,15 @@ namespace AirPlay
             }
 
             /// <summary>
-            /// Positions the close button and the embedded player inside the client area.
-            /// The player is inset by the resize border so that window edges stay clickable
-            /// for mouse resizing (a child window would otherwise swallow those pixels).
-            /// Safe to call before the close button exists (form construction re-entrancy).
+            /// 摆放关闭按钮和内嵌播放器。播放器只让出顶部拖动条，四周缩放边框由系统的
+            /// WS_THICKFRAME 处理，所以不会被子窗口遮住。
+            /// 窗体构造期间也可能被调用，需容忍 _closeButton 为空。
             /// </summary>
             public void LayoutChildren()
             {
                 var client = ClientRectangle;
                 if (client.Width <= 0 || client.Height <= 0) return;
 
-                int border = BorderPx;
                 int strip = StripPx;
                 int close = ClosePx;
 
@@ -446,20 +405,29 @@ namespace AirPlay
                 var player = _playerHwnd;
                 if (player != IntPtr.Zero)
                 {
-                    int videoWidth = client.Width - border * 2;
-                    int videoHeight = client.Height - strip - border;
-                    if (videoWidth > 0 && videoHeight > 0)
+                    int videoHeight = client.Height - strip;
+                    if (client.Width > 0 && videoHeight > 0)
                     {
-                        MoveWindow(player, border, strip, videoWidth, videoHeight, true);
+                        MoveWindow(player, 0, strip, client.Width, videoHeight, true);
                     }
                 }
             }
 
-            private int BorderPx => ScaleForDpi(ResizeBorder, DeviceDpi);
-
             private int StripPx => ScaleForDpi(DragStripHeight, DeviceDpi);
 
             private int ClosePx => ScaleForDpi(CloseButtonSize, DeviceDpi);
+
+            protected override CreateParams CreateParams
+            {
+                get
+                {
+                    var cp = base.CreateParams;
+                    // 无边框窗体默认没有缩放手柄；补上 WS_THICKFRAME，
+                    // 由 Windows 负责四边/四角的缩放和光标，避免自行命中测试。
+                    cp.Style |= WsThickFrame;
+                    return cp;
+                }
+            }
 
             protected override void OnResize(EventArgs e)
             {
@@ -475,36 +443,13 @@ namespace AirPlay
                     int screenX = unchecked((short)(lParam & 0xFFFF));
                     int screenY = unchecked((short)((lParam >> 16) & 0xFFFF));
                     var clientPoint = PointToClient(new Point(screenX, screenY));
-                    m.Result = (IntPtr)HitTest(clientPoint, ClientSize, BorderPx, StripPx);
-                    return;
-                }
-
-                if (m.Msg == WmSetCursor)
-                {
-                    // Borderless windows have no WS_THICKFRAME, so DefWindowProc never shows
-                    // the sizing cursors; set them explicitly for the resize border.
-                    switch (HitTest(PointToClient(Cursor.Position), ClientSize, BorderPx, StripPx))
+                    var client = ClientSize;
+                    // 顶部条的客户区部分作为标题栏，用来拖动窗口；边框、四角等交给系统处理。
+                    if (clientPoint.X >= 0 && clientPoint.X < client.Width &&
+                        clientPoint.Y >= 0 && clientPoint.Y < StripPx)
                     {
-                        case HtLeft:
-                        case HtRight:
-                            Cursor = Cursors.SizeWE;
-                            m.Result = (IntPtr)1;
-                            return;
-                        case HtTop:
-                        case HtBottom:
-                            Cursor = Cursors.SizeNS;
-                            m.Result = (IntPtr)1;
-                            return;
-                        case HtTopLeft:
-                        case HtBottomRight:
-                            Cursor = Cursors.SizeNWSE;
-                            m.Result = (IntPtr)1;
-                            return;
-                        case HtTopRight:
-                        case HtBottomLeft:
-                            Cursor = Cursors.SizeNESW;
-                            m.Result = (IntPtr)1;
-                            return;
+                        m.Result = (IntPtr)HtCaption;
+                        return;
                     }
                 }
 
