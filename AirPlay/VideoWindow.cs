@@ -410,6 +410,8 @@ namespace AirPlay
                 ForeColor = Color.White;
                 Text = "AirPlay";
                 ShowInTaskbar = true;
+                // 任务栏图标与托盘图标保持一致（无边框窗体的任务栏图标取自 Form.Icon）。
+                Icon = AirPlayTrayIcon.Load();
                 StartPosition = FormStartPosition.CenterScreen;
 
                 // Create and add the close button before any property that may resize the form
