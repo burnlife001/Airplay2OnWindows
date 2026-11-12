@@ -168,6 +168,9 @@ namespace AirPlay
 
                 ShowWindow(playerHwnd, SwShow);
 
+                // SDL 在窗口隐藏期间可能丢弃尺寸事件，显示后重新对齐一次，避免画面被裁切。
+                form.LayoutChildren();
+
                 // #region agent log
                 DebugSessionLog.Write("V1", "VideoWindow.AttachPlayer", "ffplay window attached", new
                 {

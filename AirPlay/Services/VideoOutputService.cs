@@ -180,7 +180,8 @@ namespace AirPlay.Services
                     FileName = ffplayPath,
                     Arguments = ffplayArgs,
                     UseShellExecute = false,
-                    CreateNoWindow = false
+                    // ffplay 是控制台程序：不创建控制台窗口，只保留它自己的 SDL 视频窗口。
+                    CreateNoWindow = true
                 };
 
                 _ffplayProcess = Process.Start(psi);

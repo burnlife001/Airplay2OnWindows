@@ -24,7 +24,20 @@ namespace AirPlay
 #if USE_WINDOWS_TRAY
             if (OperatingSystem.IsWindows())
             {
+                // 高 DPI 感知必须在外层任意窗口创建前设置：
+                // ffplay/SDL 是 144 DPI(150%) 感知进程，若本进程不感知 DPI，
+                // 嵌入的 ffplay 子窗口会被 DPI 虚拟化放大，画面只显示一部分。
+                try
+                {
+                    System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
+                }
+                catch
+                {
+                    // 已经设置过时忽略。
+                }
+
                 AppFileLog.Install();
+                Console.WriteLine($"High DPI mode: {System.Windows.Forms.Application.HighDpiMode}");
             }
 #endif
 
