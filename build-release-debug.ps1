@@ -145,7 +145,8 @@ function Resolve-Version {
         $m = Select-String -LiteralPath $csproj -Pattern '<Version>([^<]+)</Version>' | Select-Object -First 1
         if ($m) { return 'v' + $m.Matches[0].Groups[1].Value.Trim() }
     }
-    return 'v1.0.0.2'
+    # 版本号只认源码，读不到就报错，避免打包出与 exe 版本不一致的包
+    throw '无法从 AirPlay\AirPlay.csproj 读取 <Version>，请用 -Version 显式指定'
 }
 
 function Get-OriginSlug {
@@ -295,6 +296,7 @@ function Invoke-ReleaseTag {
     # 远端仓库默认分支不是当前分支，tag push 事件不会触发工作流，改用 workflow_dispatch 显式发布
     & gh workflow run build.yml --repo $repo --ref $branch -f "version=$tag" -f 'release=true'
     if ($LASTEXITCODE -ne 0) { throw "触发发布工作流失败，退出码 $LASTEXITCODE（若提示权限不足，执行 gh auth refresh -s workflow 后重试）" }
+    Write-Host "Release 页面: https://github.com/$repo/releases/tag/$tag" -ForegroundColor Green
 
     $run = Wait-NewRun -Repo $repo -BeforeId $beforeId
     if ($null -eq $run) {
@@ -302,9 +304,6 @@ function Invoke-ReleaseTag {
         return
     }
     Show-RunResult -Repo $repo -Run $run -VersionTag $tag -Track:$Watch
-    if ($Watch) {
-        Write-Host "Release 页面: https://github.com/$repo/releases/tag/$tag" -ForegroundColor Green
-    }
 }
 
 function New-DistributionPackage {
