@@ -56,6 +56,11 @@ namespace AirPlay
         private const int SwHide = 0;
         private const int SwShow = 5;
 
+        // 让 DWM 用深色主题绘制非客户区，否则 WS_THICKFRAME 的顶部边框会按浅色主题
+        // 画成 #F3F3F3，在黑底窗口上显得突兀。
+        private const int DwmwaUseImmersiveDarkMode = 20;
+        private const int DwmwaUseImmersiveDarkModeLegacy = 19;
+
         private const uint SwpNosize = 0x0001;
         private const uint SwpNomove = 0x0002;
         private const uint SwpNozorder = 0x0004;
@@ -392,6 +397,9 @@ namespace AirPlay
 
         private sealed class VideoForm : Form
         {
+            // DWM 深色非客户区边框的实测颜色（#202020）。
+            private static readonly Color DarkFrameColor = Color.FromArgb(32, 32, 32);
+
             private readonly Label? _closeButton;
             private bool _allowRealClose;
             private readonly Stopwatch _resizeClock = new Stopwatch();
@@ -406,7 +414,8 @@ namespace AirPlay
             public VideoForm()
             {
                 FormBorderStyle = FormBorderStyle.None;
-                BackColor = Color.Black;
+                // 与 DWM 深色非客户区边框同色（#202020），避免顶部拖动条和系统边框出现色差。
+                BackColor = DarkFrameColor;
                 ForeColor = Color.White;
                 Text = "AirPlay";
                 ShowInTaskbar = true;
@@ -421,7 +430,7 @@ namespace AirPlay
                     AutoSize = false,
                     Size = new Size(CloseButtonSize, CloseButtonSize),
                     Location = new Point(0, 0),
-                    BackColor = Color.Black,
+                    BackColor = DarkFrameColor,
                     ForeColor = Color.White,
                     Text = "✕",
                     TextAlign = ContentAlignment.MiddleCenter,
@@ -436,6 +445,25 @@ namespace AirPlay
                 _playerTimer.Tick += OnPlayerTimerTick;
 
                 MinimumSize = new Size(MinWidth, MinHeight);
+            }
+
+            protected override void OnHandleCreated(EventArgs e)
+            {
+                base.OnHandleCreated(e);
+                ApplyDarkFrame();
+            }
+
+            /// <summary>
+            /// 让 DWM 按深色主题绘制 WS_THICKFRAME 的非客户区边框。
+            /// 失败时退回旧版属性号，都失败则保留系统默认的浅色边框。
+            /// </summary>
+            private void ApplyDarkFrame()
+            {
+                int enabled = 1;
+                if (DwmSetWindowAttribute(Handle, DwmwaUseImmersiveDarkMode, ref enabled, sizeof(int)) != 0)
+                {
+                    DwmSetWindowAttribute(Handle, DwmwaUseImmersiveDarkModeLegacy, ref enabled, sizeof(int));
+                }
             }
 
             /// <summary>
@@ -696,6 +724,9 @@ namespace AirPlay
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
+
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 
         [DllImport("user32.dll", EntryPoint = "GetWindowLongW", SetLastError = true)]
         private static extern int GetWindowLong32(IntPtr hWnd, int nIndex);
