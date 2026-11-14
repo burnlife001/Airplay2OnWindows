@@ -310,18 +310,24 @@ function New-DistributionPackage {
 }
 
 if ([string]::IsNullOrWhiteSpace($Configuration)) {
-    # 非交互环境（CI/agent）不能弹菜单等待输入，直接报错给出用法
-    if ([Console]::IsInputRedirected) {
+    # 只触发 CI 时不需要选本地配置，也就不能弹菜单
+    if ($CiTrigger) {
+        $Configuration = 'Release'
+    }
+    # 无任何参数运行视为人工双击，弹菜单；其余情况（agent/CI）直接报错给出用法
+    elseif ($PSBoundParameters.Count -eq 0 -and -not $NoPause) {
+        $task = Select-Task
+        $Configuration = $task.Configuration
+        $SelfContained = $task.SelfContained
+        $Package = $task.Package
+        $CiArtifact = $task.CiArtifact
+        $BuildOnly = $task.BuildOnly
+        $CiTrigger = $task.CiTrigger
+        $Watch = $task.Watch
+    }
+    else {
         throw '非交互环境：请用 -Configuration Debug|Release 指定配置，打包分发包再加 -Package -SelfContained'
     }
-    $task = Select-Task
-    $Configuration = $task.Configuration
-    $SelfContained = $task.SelfContained
-    $Package = $task.Package
-    $CiArtifact = $task.CiArtifact
-    $BuildOnly = $task.BuildOnly
-    $CiTrigger = $task.CiTrigger
-    $Watch = $task.Watch
 }
 
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
