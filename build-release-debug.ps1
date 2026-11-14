@@ -13,6 +13,8 @@
   .\build-release-debug.ps1 -Configuration Release
 .EXAMPLE
   .\build-release-debug.ps1 -Configuration Release -SelfContained -Package -Version v1.0.1
+.EXAMPLE
+  .\build-release-debug.ps1 -CiTrigger   # 触发 GitHub Actions 在远端打包
 #>
 [CmdletBinding()]
 param(
@@ -26,6 +28,10 @@ param(
     [switch] $CiArtifact,
 
     [switch] $BuildOnly,
+
+    [switch] $CiTrigger,
+
+    [switch] $Watch,
 
     [string] $Version = '',
 
@@ -43,6 +49,14 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# 任何未处理异常都先打印原因并暂停，避免双击运行时窗口一闪而过、看不到失败原因
+trap {
+    Write-Host ''
+    Write-Host "执行失败: $($_.Exception.Message)" -ForegroundColor Red
+    Wait-Interactive
+    exit 1
+}
 
 $repoRoot = $PSScriptRoot
 $project = Join-Path $repoRoot 'AirPlay\AirPlay.csproj'
@@ -69,15 +83,15 @@ function Select-Task {
     Write-Host '1. Debug 编译（仅编译，输出到 bin\Debug\net10.0）'
     Write-Host '2. Release 编译（仅编译，输出到 bin\Release\net10.0）'
     Write-Host '3. Release 发布 + 本地 zip 分发包（自包含 win-x64）'
-    Write-Host '4. GitHub CI 制品包（自包含 win-x64，zip 根目录平铺，与 CI 产物一致）'
+    Write-Host '4. 触发 GitHub Actions 构建（在 GitHub 上打包，不在本地打包）'
     Write-Host '0. 退出'
     Write-Host ''
     $choice = Read-Host '请选择'
     switch ($choice) {
-        '1' { return @{ Configuration = 'Debug'; SelfContained = $false; Package = $false; CiArtifact = $false; BuildOnly = $true } }
-        '2' { return @{ Configuration = 'Release'; SelfContained = $false; Package = $false; CiArtifact = $false; BuildOnly = $true } }
-        '3' { return @{ Configuration = 'Release'; SelfContained = $true; Package = $true; CiArtifact = $false; BuildOnly = $false } }
-        '4' { return @{ Configuration = 'Release'; SelfContained = $true; Package = $true; CiArtifact = $true; BuildOnly = $false } }
+        '1' { return @{ Configuration = 'Debug'; SelfContained = $false; Package = $false; CiArtifact = $false; BuildOnly = $true; CiTrigger = $false; Watch = $false } }
+        '2' { return @{ Configuration = 'Release'; SelfContained = $false; Package = $false; CiArtifact = $false; BuildOnly = $true; CiTrigger = $false; Watch = $false } }
+        '3' { return @{ Configuration = 'Release'; SelfContained = $true; Package = $true; CiArtifact = $false; BuildOnly = $false; CiTrigger = $false; Watch = $false } }
+        '4' { return @{ Configuration = 'Release'; SelfContained = $true; Package = $false; CiArtifact = $false; BuildOnly = $false; CiTrigger = $true; Watch = $true } }
         '0' { exit 0 }
         default {
             Write-Host '无效输入' -ForegroundColor Red
@@ -126,6 +140,88 @@ function Resolve-Version {
         if ($m) { return 'v' + $m.Matches[0].Groups[1].Value.Trim() }
     }
     return 'v1.0.0.2'
+}
+
+function Get-OriginSlug {
+    # 本仓库 origin 指向 fork，upstream 指向上游；gh 默认可能选到 upstream，
+    # 所以所有 gh 命令都显式 --repo 指定 origin 对应的仓库
+    $url = (& git remote get-url origin).Trim()
+    if ($url -match 'github\.com[:/](?<slug>[^/]+/[^/]+?)(\.git)?$') {
+        return $Matches['slug']
+    }
+    throw "无法从 origin 地址解析 GitHub 仓库: $url"
+}
+
+function Invoke-GitHubCi {
+    param([switch] $Watch)
+    if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) {
+        throw '未找到 gh 命令：请先安装 GitHub CLI (https://cli.github.com/) 并执行 gh auth login'
+    }
+    & gh auth status *> $null
+    if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI 未登录，请先执行: gh auth login' }
+
+    $repo = Get-OriginSlug
+    $branch = (& git rev-parse --abbrev-ref HEAD).Trim()
+    # 工作流只能构建远端已有分支上的代码
+    if ([string]::IsNullOrWhiteSpace((& git ls-remote --heads origin $branch 2>$null))) {
+        throw "分支 $branch 尚未推送到 origin，请先执行: git push -u origin $branch"
+    }
+    if (-not [string]::IsNullOrWhiteSpace((& git status --porcelain))) {
+        Write-Host '  注意：工作区有未提交的改动，GitHub 上构建的是远端已有代码' -ForegroundColor Yellow
+    }
+
+    # 记录触发前的最新 run id：上一次构建可能还在跑，靠 id 变大认出这次新触发的运行
+    $beforeId = 0
+    $beforeRaw = & gh run list --repo $repo --workflow build.yml --branch $branch --limit 1 --json databaseId 2>$null
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($beforeRaw)) {
+        $before = ($beforeRaw | ConvertFrom-Json) | Select-Object -First 1
+        if ($null -ne $before) { $beforeId = [long]$before.databaseId }
+    }
+
+    $versionTag = Resolve-Version
+    Write-Host "==> 触发 GitHub Actions: $repo build.yml @ $branch (version=$versionTag)" -ForegroundColor Cyan
+    & gh workflow run build.yml --repo $repo --ref $branch -f "version=$versionTag"
+    if ($LASTEXITCODE -ne 0) { throw "触发工作流失败，退出码 $LASTEXITCODE（若提示权限不足，执行 gh auth refresh -s workflow 后重试）" }
+
+    # 等新的运行出现（最多约 60 秒）
+    $run = $null
+    for ($i = 0; $i -lt 30 -and $null -eq $run; $i++) {
+        Start-Sleep -Seconds 2
+        $raw = & gh run list --repo $repo --workflow build.yml --branch $branch --limit 5 --json databaseId,status,url 2>$null
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($raw)) {
+            $newest = @($raw | ConvertFrom-Json) | Sort-Object databaseId -Descending | Select-Object -First 1
+            if ($null -ne $newest -and [long]$newest.databaseId -gt $beforeId) { $run = $newest }
+        }
+    }
+    if ($null -eq $run) {
+        Write-Host '  已触发，但暂时查不到运行记录，请到仓库 Actions 页面查看' -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host ''
+    Write-Host "构建已提交: $($run.url)" -ForegroundColor Green
+    if (-not $Watch) {
+        Write-Host "  查看进度: gh run watch $($run.databaseId) --repo $repo"
+        Write-Host "  完成后下载: gh run download $($run.databaseId) --repo $repo -n AirPlay-win-x64-$versionTag"
+        return
+    }
+
+    Write-Host '==> 跟踪构建中（Ctrl+C 只中断跟踪，不影响 GitHub 上的构建）' -ForegroundColor Cyan
+    & gh run watch $run.databaseId --repo $repo --interval 10
+    $view = (& gh run view $run.databaseId --repo $repo --json status,conclusion 2>$null) | ConvertFrom-Json
+    if ($view.conclusion -eq 'success') {
+        Write-Host ''
+        Write-Host '构建成功' -ForegroundColor Green
+        $artifacts = & gh api "repos/$repo/actions/runs/$($run.databaseId)/artifacts" --jq '.artifacts[].name' 2>$null
+        foreach ($name in @($artifacts)) {
+            if (-not [string]::IsNullOrWhiteSpace($name)) {
+                Write-Host "  下载产物: gh run download $($run.databaseId) --repo $repo -n $name"
+            }
+        }
+    }
+    else {
+        throw "构建未成功（$($view.conclusion)），失败日志: gh run view $($run.databaseId) --repo $repo --log-failed"
+    }
 }
 
 function New-DistributionPackage {
@@ -224,6 +320,8 @@ if ([string]::IsNullOrWhiteSpace($Configuration)) {
     $Package = $task.Package
     $CiArtifact = $task.CiArtifact
     $BuildOnly = $task.BuildOnly
+    $CiTrigger = $task.CiTrigger
+    $Watch = $task.Watch
 }
 
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
@@ -238,6 +336,12 @@ if ([string]::IsNullOrWhiteSpace($OutputDir)) {
 
 if (-not (Test-Path -LiteralPath $project)) {
     throw "找不到项目: $project"
+}
+
+if ($CiTrigger) {
+    Invoke-GitHubCi -Watch:$Watch
+    Wait-Interactive
+    return
 }
 
 if ($BuildOnly) {
