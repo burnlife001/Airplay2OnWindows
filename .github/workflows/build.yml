@@ -9,9 +9,14 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号 (用于产物命名, 如 releaseV1.0.0.2)'
+        description: '版本号 (用于产物命名, 如 v1.0.0.2)'
         required: false
         default: 'dev'
+      release:
+        description: '是否创建 GitHub Release（标签需已存在）'
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   build:
@@ -84,28 +89,33 @@ jobs:
         name: AirPlay-win-x64-${{ inputs.version || github.ref_name }}
         path: ./publish/win-x64/
 
-  # 只有推送 v* 标签时才创建 Release，普通构建只产出 Actions 制品
+  # 分支/tag 推送只上传制品；创建 Release 由 release 输入或 v* 标签触发
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      PKG_VERSION: ${{ inputs.version || github.ref_name }}
 
     steps:
     - name: Download build artifact
       uses: actions/download-artifact@v4
       with:
-        name: AirPlay-win-x64-${{ github.ref_name }}
+        name: AirPlay-win-x64-${{ inputs.version || github.ref_name }}
         path: pkg
 
     - name: Pack zip
       run: |
         cd pkg
-        zip -r "../AirPlay-win-x64-${{ github.ref_name }}.zip" .
+        zip -r "../AirPlay-win-x64-${PKG_VERSION}.zip" .
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        files: AirPlay-win-x64-${{ github.ref_name }}.zip
+        tag_name: ${{ env.PKG_VERSION }}
+        name: ${{ env.PKG_VERSION }}
+        target_commitish: ${{ github.sha }}
+        files: AirPlay-win-x64-${{ env.PKG_VERSION }}.zip
         generate_release_notes: true

@@ -237,28 +237,39 @@ function Invoke-GitHubCi {
 }
 
 function Invoke-ReleaseTag {
-    # 打 v<版本> 标签并推送，工作流据此创建 GitHub Release
+    # 打 v<版本> 标签（已存在则跳过）并触发工作流创建 GitHub Release
     param([switch] $Watch, [switch] $Confirm)
     Assert-GhAvailable
 
     $repo = Get-OriginSlug
     $tag = Resolve-Version
     if (-not $tag.StartsWith('v')) { $tag = "v$tag" }
+    $branch = (& git rev-parse --abbrev-ref HEAD).Trim()
+    if ([string]::IsNullOrWhiteSpace((& git ls-remote --heads origin $branch 2>$null))) {
+        throw "分支 $branch 尚未推送到 origin，请先执行: git push -u origin $branch"
+    }
+
+    # 已有 Release 就不再重复发布
+    & gh release view $tag --repo $repo *> $null
+    if ($LASTEXITCODE -eq 0) {
+        throw "Release $tag 已存在: https://github.com/$repo/releases/tag/$tag（如需重发请提升 AirPlay.csproj 版本号）"
+    }
 
     if (-not [string]::IsNullOrWhiteSpace((& git status --porcelain))) {
         Write-Host '  注意：工作区有未提交的改动，Release 只包含最后一次提交的内容' -ForegroundColor Yellow
     }
-    if (& git rev-parse -q --verify "refs/tags/$tag" 2>$null) {
-        throw "标签 $tag 已存在（本地）：请先删除旧标签，或提升 AirPlay.csproj 里的版本号"
-    }
-    if (-not [string]::IsNullOrWhiteSpace((& git ls-remote --tags origin $tag 2>$null))) {
-        throw "标签 $tag 已存在于 origin：请提升 AirPlay.csproj 里的版本号"
-    }
 
+    $localTag = -not [string]::IsNullOrWhiteSpace((& git rev-parse -q --verify "refs/tags/$tag" 2>$null))
+    $remoteTag = -not [string]::IsNullOrWhiteSpace((& git ls-remote --tags origin $tag 2>$null))
     $head = (& git rev-parse --short HEAD).Trim()
-    Write-Host "==> 发布 $tag（基于提交 $head）到 $repo" -ForegroundColor Cyan
+
+    Write-Host "==> 发布 $tag 到 $repo（分支 $branch，提交 $head）" -ForegroundColor Cyan
+    if (-not $localTag) { Write-Host "    将新建标签 $tag" }
+    elseif (-not $remoteTag) { Write-Host "    标签 $tag 已存在（本地），将推送到 origin" }
+    else { Write-Host "    标签 $tag 已存在于 origin，直接复用" }
+
     if ($Confirm) {
-        $answer = Read-Host '将创建并推送标签，触发 GitHub Release，继续? (y/N)'
+        $answer = Read-Host "将创建并推送标签并触发 GitHub Release，继续? (y/N)"
         if ($answer -notmatch '^(y|yes)$') {
             Write-Host '已取消'
             return
@@ -266,23 +277,34 @@ function Invoke-ReleaseTag {
     }
 
     $beforeId = Get-LatestRunId -Repo $repo
-    & git tag $tag
-    if ($LASTEXITCODE -ne 0) { throw "创建标签失败: $tag" }
-    & git push origin $tag
-    if ($LASTEXITCODE -ne 0) {
-        # 推送失败时回收刚建的本地标签，避免下次被「标签已存在」挡住
-        & git tag -d $tag *> $null
-        throw "推送标签失败，已删除本地标签 $tag"
+
+    if (-not $localTag) {
+        & git tag $tag
+        if ($LASTEXITCODE -ne 0) { throw "创建标签失败: $tag" }
     }
-    Write-Host "标签已推送: $tag" -ForegroundColor Green
-    Write-Host "Release 页面: https://github.com/$repo/releases/tag/$tag"
+    if (-not $remoteTag) {
+        & git push origin $tag
+        if ($LASTEXITCODE -ne 0) {
+            # 推送失败时回收刚建的本地标签，避免下次被「标签已存在」挡住
+            if (-not $localTag) { & git tag -d $tag *> $null }
+            throw "推送标签失败: $tag"
+        }
+        Write-Host "标签已推送: $tag" -ForegroundColor Green
+    }
+
+    # 远端仓库默认分支不是当前分支，tag push 事件不会触发工作流，改用 workflow_dispatch 显式发布
+    & gh workflow run build.yml --repo $repo --ref $branch -f "version=$tag" -f 'release=true'
+    if ($LASTEXITCODE -ne 0) { throw "触发发布工作流失败，退出码 $LASTEXITCODE（若提示权限不足，执行 gh auth refresh -s workflow 后重试）" }
 
     $run = Wait-NewRun -Repo $repo -BeforeId $beforeId
     if ($null -eq $run) {
-        Write-Host '  暂未查到运行记录，请到 Actions 页面查看' -ForegroundColor Yellow
+        Write-Host '  已触发，但暂时查不到运行记录，请到 Actions 页面查看' -ForegroundColor Yellow
         return
     }
     Show-RunResult -Repo $repo -Run $run -VersionTag $tag -Track:$Watch
+    if ($Watch) {
+        Write-Host "Release 页面: https://github.com/$repo/releases/tag/$tag" -ForegroundColor Green
+    }
 }
 
 function New-DistributionPackage {
