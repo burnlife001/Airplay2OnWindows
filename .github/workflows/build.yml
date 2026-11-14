@@ -73,6 +73,23 @@ jobs:
         Copy-Item "ffmpeg-cache\ffmpeg.exe" -Destination ./publish/win-x64/
         Copy-Item "ffmpeg-cache\ffplay.exe" -Destination ./publish/win-x64/
 
+    - name: Trim publish output
+      shell: pwsh
+      run: |
+        # 与本地打包脚本对齐：剔除调试符号、非 Windows 配置、多余语言资源、Linux 原生库
+        $root = './publish/win-x64'
+        Get-ChildItem -LiteralPath $root -Filter *.pdb -File | Remove-Item -Force
+        Get-ChildItem -LiteralPath $root -Filter *.log -File | Remove-Item -Force
+        foreach ($name in @('appsettings_linux.json', 'appsettings_osx.json')) {
+            $path = Join-Path $root $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+        }
+        $dirs = @('cs', 'de', 'es', 'fr', 'it', 'ja', 'ko', 'pl', 'pt-BR', 'ru', 'tr', 'zh-Hans', 'zh-Hant', 'runtimes', 'Logs')
+        foreach ($name in $dirs) {
+            $path = Join-Path $root $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+        }
+
     - name: Verify package files
       shell: pwsh
       run: |
