@@ -15,6 +15,8 @@
   .\build-release-debug.ps1 -Configuration Release -SelfContained -Package -Version v1.0.1
 .EXAMPLE
   .\build-release-debug.ps1 -CiTrigger   # 触发 GitHub Actions 在远端打包
+.EXAMPLE
+  .\build-release-debug.ps1 -Release     # 按 csproj 版本打 v 标签并推送，触发 GitHub Release
 #>
 [CmdletBinding()]
 param(
@@ -30,6 +32,8 @@ param(
     [switch] $BuildOnly,
 
     [switch] $CiTrigger,
+
+    [switch] $Release,
 
     [switch] $Watch,
 
@@ -84,14 +88,16 @@ function Select-Task {
     Write-Host '2. Release 编译（仅编译，输出到 bin\Release\net10.0）'
     Write-Host '3. Release 发布 + 本地 zip 分发包（自包含 win-x64）'
     Write-Host '4. 触发 GitHub Actions 构建（在 GitHub 上打包，不在本地打包）'
+    Write-Host '5. 发布 Release（按 csproj 版本打 v 标签并推送，触发 GitHub Release）'
     Write-Host '0. 退出'
     Write-Host ''
     $choice = Read-Host '请选择'
     switch ($choice) {
-        '1' { return @{ Configuration = 'Debug'; SelfContained = $false; Package = $false; CiArtifact = $false; BuildOnly = $true; CiTrigger = $false; Watch = $false } }
-        '2' { return @{ Configuration = 'Release'; SelfContained = $false; Package = $false; CiArtifact = $false; BuildOnly = $true; CiTrigger = $false; Watch = $false } }
-        '3' { return @{ Configuration = 'Release'; SelfContained = $true; Package = $true; CiArtifact = $false; BuildOnly = $false; CiTrigger = $false; Watch = $false } }
-        '4' { return @{ Configuration = 'Release'; SelfContained = $true; Package = $false; CiArtifact = $false; BuildOnly = $false; CiTrigger = $true; Watch = $true } }
+        '1' { return @{ Configuration = 'Debug'; SelfContained = $false; Package = $false; CiArtifact = $false; BuildOnly = $true; CiTrigger = $false; Release = $false; Watch = $false } }
+        '2' { return @{ Configuration = 'Release'; SelfContained = $false; Package = $false; CiArtifact = $false; BuildOnly = $true; CiTrigger = $false; Release = $false; Watch = $false } }
+        '3' { return @{ Configuration = 'Release'; SelfContained = $true; Package = $true; CiArtifact = $false; BuildOnly = $false; CiTrigger = $false; Release = $false; Watch = $false } }
+        '4' { return @{ Configuration = 'Release'; SelfContained = $true; Package = $false; CiArtifact = $false; BuildOnly = $false; CiTrigger = $true; Release = $false; Watch = $true } }
+        '5' { return @{ Configuration = 'Release'; SelfContained = $true; Package = $false; CiArtifact = $false; BuildOnly = $false; CiTrigger = $false; Release = $true; Watch = $true } }
         '0' { exit 0 }
         default {
             Write-Host '无效输入' -ForegroundColor Red
@@ -152,13 +158,59 @@ function Get-OriginSlug {
     throw "无法从 origin 地址解析 GitHub 仓库: $url"
 }
 
-function Invoke-GitHubCi {
-    param([switch] $Watch)
+function Assert-GhAvailable {
     if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) {
         throw '未找到 gh 命令：请先安装 GitHub CLI (https://cli.github.com/) 并执行 gh auth login'
     }
     & gh auth status *> $null
     if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI 未登录，请先执行: gh auth login' }
+}
+
+function Get-LatestRunId {
+    param([string] $Repo)
+    $raw = & gh run list --repo $Repo --workflow build.yml --limit 1 --json databaseId 2>$null
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($raw)) {
+        $latest = ($raw | ConvertFrom-Json) | Select-Object -First 1
+        if ($null -ne $latest) { return [long]$latest.databaseId }
+    }
+    return 0
+}
+
+function Wait-NewRun {
+    # 上一次构建可能还在跑，靠 run id 变大认出新触发的运行
+    param([string] $Repo, [long] $BeforeId)
+    for ($i = 0; $i -lt 30; $i++) {
+        Start-Sleep -Seconds 2
+        $raw = & gh run list --repo $Repo --workflow build.yml --limit 5 --json databaseId,url 2>$null
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) { continue }
+        $newest = @($raw | ConvertFrom-Json) | Sort-Object databaseId -Descending | Select-Object -First 1
+        if ($null -ne $newest -and [long]$newest.databaseId -gt $BeforeId) { return $newest }
+    }
+    return $null
+}
+
+function Show-RunResult {
+    param([string] $Repo, $Run, [string] $VersionTag, [switch] $Track)
+    Write-Host ''
+    Write-Host "构建已提交: $($Run.url)" -ForegroundColor Green
+    if (-not $Track) {
+        Write-Host "  查看进度: gh run watch $($Run.databaseId) --repo $Repo"
+        Write-Host "  完成后下载: gh run download $($Run.databaseId) --repo $Repo -n AirPlay-win-x64-$VersionTag"
+        return
+    }
+    Write-Host '==> 跟踪构建中（Ctrl+C 只中断跟踪，不影响 GitHub 上的构建）' -ForegroundColor Cyan
+    & gh run watch $Run.databaseId --repo $Repo --interval 10
+    $view = (& gh run view $Run.databaseId --repo $Repo --json status,conclusion 2>$null) | ConvertFrom-Json
+    if ($view.conclusion -ne 'success') {
+        throw "构建未成功（$($view.conclusion)），失败日志: gh run view $($Run.databaseId) --repo $Repo --log-failed"
+    }
+    Write-Host ''
+    Write-Host '构建成功' -ForegroundColor Green
+}
+
+function Invoke-GitHubCi {
+    param([switch] $Watch)
+    Assert-GhAvailable
 
     $repo = Get-OriginSlug
     $branch = (& git rev-parse --abbrev-ref HEAD).Trim()
@@ -170,58 +222,67 @@ function Invoke-GitHubCi {
         Write-Host '  注意：工作区有未提交的改动，GitHub 上构建的是远端已有代码' -ForegroundColor Yellow
     }
 
-    # 记录触发前的最新 run id：上一次构建可能还在跑，靠 id 变大认出这次新触发的运行
-    $beforeId = 0
-    $beforeRaw = & gh run list --repo $repo --workflow build.yml --branch $branch --limit 1 --json databaseId 2>$null
-    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($beforeRaw)) {
-        $before = ($beforeRaw | ConvertFrom-Json) | Select-Object -First 1
-        if ($null -ne $before) { $beforeId = [long]$before.databaseId }
-    }
-
+    $beforeId = Get-LatestRunId -Repo $repo
     $versionTag = Resolve-Version
     Write-Host "==> 触发 GitHub Actions: $repo build.yml @ $branch (version=$versionTag)" -ForegroundColor Cyan
     & gh workflow run build.yml --repo $repo --ref $branch -f "version=$versionTag"
     if ($LASTEXITCODE -ne 0) { throw "触发工作流失败，退出码 $LASTEXITCODE（若提示权限不足，执行 gh auth refresh -s workflow 后重试）" }
 
-    # 等新的运行出现（最多约 60 秒）
-    $run = $null
-    for ($i = 0; $i -lt 30 -and $null -eq $run; $i++) {
-        Start-Sleep -Seconds 2
-        $raw = & gh run list --repo $repo --workflow build.yml --branch $branch --limit 5 --json databaseId,status,url 2>$null
-        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($raw)) {
-            $newest = @($raw | ConvertFrom-Json) | Sort-Object databaseId -Descending | Select-Object -First 1
-            if ($null -ne $newest -and [long]$newest.databaseId -gt $beforeId) { $run = $newest }
-        }
-    }
+    $run = Wait-NewRun -Repo $repo -BeforeId $beforeId
     if ($null -eq $run) {
         Write-Host '  已触发，但暂时查不到运行记录，请到仓库 Actions 页面查看' -ForegroundColor Yellow
         return
     }
+    Show-RunResult -Repo $repo -Run $run -VersionTag $versionTag -Track:$Watch
+}
 
-    Write-Host ''
-    Write-Host "构建已提交: $($run.url)" -ForegroundColor Green
-    if (-not $Watch) {
-        Write-Host "  查看进度: gh run watch $($run.databaseId) --repo $repo"
-        Write-Host "  完成后下载: gh run download $($run.databaseId) --repo $repo -n AirPlay-win-x64-$versionTag"
-        return
+function Invoke-ReleaseTag {
+    # 打 v<版本> 标签并推送，工作流据此创建 GitHub Release
+    param([switch] $Watch, [switch] $Confirm)
+    Assert-GhAvailable
+
+    $repo = Get-OriginSlug
+    $tag = Resolve-Version
+    if (-not $tag.StartsWith('v')) { $tag = "v$tag" }
+
+    if (-not [string]::IsNullOrWhiteSpace((& git status --porcelain))) {
+        Write-Host '  注意：工作区有未提交的改动，Release 只包含最后一次提交的内容' -ForegroundColor Yellow
+    }
+    if (& git rev-parse -q --verify "refs/tags/$tag" 2>$null) {
+        throw "标签 $tag 已存在（本地）：请先删除旧标签，或提升 AirPlay.csproj 里的版本号"
+    }
+    if (-not [string]::IsNullOrWhiteSpace((& git ls-remote --tags origin $tag 2>$null))) {
+        throw "标签 $tag 已存在于 origin：请提升 AirPlay.csproj 里的版本号"
     }
 
-    Write-Host '==> 跟踪构建中（Ctrl+C 只中断跟踪，不影响 GitHub 上的构建）' -ForegroundColor Cyan
-    & gh run watch $run.databaseId --repo $repo --interval 10
-    $view = (& gh run view $run.databaseId --repo $repo --json status,conclusion 2>$null) | ConvertFrom-Json
-    if ($view.conclusion -eq 'success') {
-        Write-Host ''
-        Write-Host '构建成功' -ForegroundColor Green
-        $artifacts = & gh api "repos/$repo/actions/runs/$($run.databaseId)/artifacts" --jq '.artifacts[].name' 2>$null
-        foreach ($name in @($artifacts)) {
-            if (-not [string]::IsNullOrWhiteSpace($name)) {
-                Write-Host "  下载产物: gh run download $($run.databaseId) --repo $repo -n $name"
-            }
+    $head = (& git rev-parse --short HEAD).Trim()
+    Write-Host "==> 发布 $tag（基于提交 $head）到 $repo" -ForegroundColor Cyan
+    if ($Confirm) {
+        $answer = Read-Host '将创建并推送标签，触发 GitHub Release，继续? (y/N)'
+        if ($answer -notmatch '^(y|yes)$') {
+            Write-Host '已取消'
+            return
         }
     }
-    else {
-        throw "构建未成功（$($view.conclusion)），失败日志: gh run view $($run.databaseId) --repo $repo --log-failed"
+
+    $beforeId = Get-LatestRunId -Repo $repo
+    & git tag $tag
+    if ($LASTEXITCODE -ne 0) { throw "创建标签失败: $tag" }
+    & git push origin $tag
+    if ($LASTEXITCODE -ne 0) {
+        # 推送失败时回收刚建的本地标签，避免下次被「标签已存在」挡住
+        & git tag -d $tag *> $null
+        throw "推送标签失败，已删除本地标签 $tag"
     }
+    Write-Host "标签已推送: $tag" -ForegroundColor Green
+    Write-Host "Release 页面: https://github.com/$repo/releases/tag/$tag"
+
+    $run = Wait-NewRun -Repo $repo -BeforeId $beforeId
+    if ($null -eq $run) {
+        Write-Host '  暂未查到运行记录，请到 Actions 页面查看' -ForegroundColor Yellow
+        return
+    }
+    Show-RunResult -Repo $repo -Run $run -VersionTag $tag -Track:$Watch
 }
 
 function New-DistributionPackage {
@@ -310,8 +371,8 @@ function New-DistributionPackage {
 }
 
 if ([string]::IsNullOrWhiteSpace($Configuration)) {
-    # 只触发 CI 时不需要选本地配置，也就不能弹菜单
-    if ($CiTrigger) {
+    # 只触发 CI 或只发 Release 时都不需要选本地配置，也就不能弹菜单
+    if ($CiTrigger -or $Release) {
         $Configuration = 'Release'
     }
     # 无任何参数运行视为人工双击，弹菜单；其余情况（agent/CI）直接报错给出用法
@@ -323,6 +384,7 @@ if ([string]::IsNullOrWhiteSpace($Configuration)) {
         $CiArtifact = $task.CiArtifact
         $BuildOnly = $task.BuildOnly
         $CiTrigger = $task.CiTrigger
+        $Release = $task.Release
         $Watch = $task.Watch
     }
     else {
@@ -342,6 +404,12 @@ if ([string]::IsNullOrWhiteSpace($OutputDir)) {
 
 if (-not (Test-Path -LiteralPath $project)) {
     throw "找不到项目: $project"
+}
+
+if ($Release) {
+    Invoke-ReleaseTag -Watch:$Watch -Confirm:($PSBoundParameters.Count -eq 0)
+    Wait-Interactive
+    return
 }
 
 if ($CiTrigger) {
