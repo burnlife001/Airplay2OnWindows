@@ -67,48 +67,15 @@ jobs:
         Copy-Item "ffmpeg-cache\ffmpeg.exe" -Destination ./publish/win-x64/
         Copy-Item "ffmpeg-cache\ffplay.exe" -Destination ./publish/win-x64/
 
-    - name: Cache libfdk-aac
-      id: cache-fdkaac
-      uses: actions/cache@v4
-      with:
-        path: fdkaac-cache
-        key: fdkaac-win64-v1
-
-    - name: Build libfdk-aac from source
-      if: steps.cache-fdkaac.outputs.cache-hit != 'true'
-      shell: bash
+    - name: Verify package files
+      shell: pwsh
       run: |
-        # Build FDK-AAC from official source using MSYS2 (pre-installed on windows-latest)
-        export MSYSTEM=MINGW64
-        export PATH="/c/msys64/mingw64/bin:/c/msys64/usr/bin:$PATH"
-
-        # Install build dependencies
-        pacman -S --noconfirm --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake make
-
-        # Clone and build fdk-aac
-        git clone --depth 1 https://github.com/mstorsjo/fdk-aac.git fdk-aac-src
-        cd fdk-aac-src
-
-        # Use CMake for a simpler build
-        mkdir build && cd build
-        cmake -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON ..
-        cmake --build . --config Release
-
-        # Find and copy the DLL to cache
-        echo "Built files:"
-        find . -name "*.dll" -type f
-        DLL_PATH=$(find . -name "fdk-aac*.dll" -o -name "libfdk-aac*.dll" | head -1)
-        if [ -z "$DLL_PATH" ]; then
-          echo "ERROR: No FDK-AAC DLL found after build"
-          exit 1
-        fi
-        mkdir -p ../../fdkaac-cache
-        cp -v "$DLL_PATH" ../../fdkaac-cache/libfdk-aac-2.dll
-        echo "Successfully built and cached libfdk-aac-2.dll"
-
-    - name: Copy libfdk-aac to publish
-      shell: bash
-      run: cp -v fdkaac-cache/libfdk-aac-2.dll publish/win-x64/libfdk-aac-2.dll
+        # libfdk-aac-2.dll 随源码放在 AirPlay/native/，由 csproj 自动复制到发布输出
+        $required = @('AirPlay.exe', 'libfdk-aac-2.dll', 'ffplay.exe', 'ffmpeg.exe', 'appsettings_win.json')
+        $missing = $required | Where-Object { -not (Test-Path -LiteralPath "./publish/win-x64/$_") }
+        if ($missing) { throw "发布目录缺少文件: $($missing -join ', ')" }
+        Get-ChildItem ./publish/win-x64 -Filter *.dll | Measure-Object -Property Length -Sum |
+            ForEach-Object { "publish 大小: {0:N1} MB / {1} 个 dll" -f ($_.Sum / 1MB), $_.Count }
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
