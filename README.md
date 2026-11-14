@@ -60,7 +60,9 @@ For audio only, tap the AirPlay icon in any audio app on the Apple device and ch
 
 **Change the name shown on Apple devices**
 
-Open `appsettings_win.json` next to the exe with Notepad, change `Instance`, then restart:
+By default the name is `MachineName:UserName` (for example `ez390:yg`), detected automatically — no configuration needed.
+
+To use a different name, open `appsettings_win.json` next to the exe with Notepad, change `Instance` to fixed text, then restart:
 
 ```json
 "AirPlayReceiver": {
@@ -69,6 +71,8 @@ Open `appsettings_win.json` next to the exe with Notepad, change `Instance`, the
   "AirPlayPort": 7000
 }
 ```
+
+The placeholders `{MachineName}` and `{UserName}` can be combined freely, e.g. `"{UserName}'s PC"`.
 
 **Logs**
 

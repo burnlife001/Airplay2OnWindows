@@ -12,7 +12,7 @@
     <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
     <StartupObject>AirPlay.Program</StartupObject>
     <!-- 软件版本号：同时决定 exe 的「文件版本 / 产品版本」和分发包名 -->
-    <Version>1.0.0.2</Version>
+    <Version>1.0.0.3</Version>
   </PropertyGroup>
   <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
     <ApplicationIcon>Resources\airplay.ico</ApplicationIcon>

@@ -38,11 +38,24 @@ namespace AirPlay
             _airTunesPort = aprConfig?.Value?.AirTunesPort ?? 5000;
             _airPlayPort = aprConfig?.Value?.AirPlayPort ?? 7000;
             _deviceId = aprConfig?.Value?.DeviceMacAddress ?? "11:22:33:44:55:66";
-            _instance = aprConfig?.Value?.Instance ?? throw new ArgumentNullException("apr.instance");
+            _instance = ExpandInstance(aprConfig?.Value?.Instance);
 
             var dConfig = dumpConfig?.Value ?? throw new ArgumentNullException(nameof(dumpConfig));
 
             _airTunesListener = new AirTunesListener(this, _airTunesPort, _airPlayPort, dConfig);
+        }
+
+        // 手机端显示的设备名：支持 {MachineName} / {UserName} 占位符，缺省用“机器名:用户名”
+        private static string ExpandInstance(string configured)
+        {
+            if (string.IsNullOrWhiteSpace(configured))
+            {
+                return $"{Environment.MachineName}:{Environment.UserName}";
+            }
+
+            return configured
+                .Replace("{MachineName}", Environment.MachineName)
+                .Replace("{UserName}", Environment.UserName);
         }
 
         public async Task StartListeners(CancellationToken cancellationToken)

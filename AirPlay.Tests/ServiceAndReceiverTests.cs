@@ -89,10 +89,11 @@ namespace AirPlay.Tests
         }
 
         [Fact]
-        public void Constructor_ValidatesInstanceAndDumpConfig()
+        public void Constructor_AllowsMissingInstanceButRequiresDumpConfig()
         {
-            Assert.Throws<ArgumentNullException>(() => new AirPlayReceiver(
-                Options.Create(new AirPlayReceiverConfig()), Options.Create(new DumpConfig())));
+            // Instance 缺省时回退为「机器名:用户名」，不再抛异常
+            using var receiver = new AirPlayReceiver(
+                Options.Create(new AirPlayReceiverConfig()), Options.Create(new DumpConfig()));
             Assert.Throws<ArgumentNullException>(() => new AirPlayReceiver(Config(), null));
         }
 
