@@ -11,6 +11,8 @@
     <NoWarn>$(NoWarn);SYSLIB0011;SYSLIB0050;NU1701;NU1903</NoWarn>
     <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
     <StartupObject>AirPlay.Program</StartupObject>
+    <!-- 软件版本号：同时决定 exe 的「文件版本 / 产品版本」和分发包名 -->
+    <Version>1.0.0.2</Version>
   </PropertyGroup>
   <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
     <ApplicationIcon>Resources\airplay.ico</ApplicationIcon>
@@ -34,6 +36,11 @@
          避免 CA1416 对每个 WinForms 调用点报警。 -->
     <AssemblyAttribute Include="System.Runtime.Versioning.SupportedOSPlatformAttribute">
       <_Parameter1>windows</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>AirPlay.Tests</_Parameter1>
     </AssemblyAttribute>
   </ItemGroup>
   <ItemGroup>
@@ -94,6 +101,15 @@
     </None>
     <None Update="Tables\table_s1.bin">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+  <!-- 原生 AAC-ELD 解码库：代码用 DllImport("libfdk-aac-2") 按名加载，
+       Link 让它平铺到 exe 同级，否则会按 native\ 相对路径拷贝而找不到。 -->
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    <None Update="native\libfdk-aac-2.dll">
+      <Link>libfdk-aac-2.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
   </ItemGroup>
   <ItemGroup>

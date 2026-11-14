@@ -2,108 +2,107 @@
 
 [中文文档](README_zh.md)
 
-Open-source AirPlay 2 receiver for Windows, supporting **screen mirroring** (with audio) and **audio streaming** from Apple devices. Built with C# and .NET 8.
+Mirror your iPhone, iPad or Mac screen to a Windows PC, wirelessly. Your PC shows up in the Apple device's Screen Mirroring / AirPlay list — just pick it, no cable needed.
 
-![Build Status](https://github.com/YimingZhanshen/Airplay2OnWindows/workflows/Build%20and%20Test/badge.svg)
+![Build Status](https://github.com/burnlife001/Airplay2OnWindows/workflows/Build%20and%20Test/badge.svg)
 
-## Features
+## What it does
 
-- **Screen Mirroring** — Mirror your iPhone/iPad/Mac screen to Windows with H.264 video and AAC-ELD audio
-- **Auto Video Display** — Video player (ffplay) launches automatically when mirroring starts and closes when mirroring stops. Supports repeated connections without restarting the application.
-- **Audio Streaming** — Play music and podcasts via AirPlay (ALAC and AAC codecs)
-- **Volume Control** — Remote volume adjustment from your Apple device
-- **Auto-Discovery** — Bonjour/mDNS service advertising, your Windows PC appears as an AirPlay receiver automatically
+- **Screen mirroring** — the whole screen plus its sound is displayed on the PC
+- **Audio only** — play music or podcasts through the PC speakers
+- **Automatic window** — the picture window opens when mirroring starts and closes when it stops; reconnect as often as you like without restarting
+- **Volume sync** — changing volume on the Apple device changes the PC volume
+- **Runs in the background** — lives in the system tray, stays out of the taskbar
 
-## Quick Start
+## Download and install
 
-### Download
+Get `AirPlay-win-x64-*.zip` from [Releases](https://github.com/burnlife001/Airplay2OnWindows/releases), extract it to any folder, and run `AirPlay.exe`.
 
-Download the latest release from [GitHub Releases](https://github.com/YimingZhanshen/Airplay2OnWindows/releases). The package includes all required dependencies (FFmpeg, libfdk-aac).
+- No .NET or media player installation needed — everything is bundled
+- Windows may ask for firewall permission on first run: choose **Allow** (private networks are enough)
+- Requires 64-bit Windows 10 / 11
 
-### Usage
+## How to use
 
-1. Extract the downloaded package
-2. Run the application
-3. On your Apple device, open Control Center → Screen Mirroring → select your PC
-4. The mirroring window will appear automatically — no manual setup needed!
+1. Start `AirPlay.exe`; an AirPlay icon appears in the system tray
+2. Make sure the PC and the Apple device are on the **same Wi-Fi** network
+3. Start mirroring:
+   - iPhone / iPad: Control Center → **Screen Mirroring** → select your PC
+   - Mac: menu bar Control Center → **Screen Mirroring** → select your PC
+4. The picture appears automatically and closes when mirroring ends
 
-> **Note**: For audio-only streaming (e.g., music), simply select your PC as the AirPlay output device from any audio app on your Apple device.
+For audio only, tap the AirPlay icon in any audio app on the Apple device and choose your PC as the output device.
 
-### Build from Source
+## Window and tray
 
-#### Prerequisites
+| Action | Result |
+|---|---|
+| Click the ✕ in the mirroring window | Only hides the picture — mirroring and audio keep running |
+| Left-click the tray icon | Bring the mirroring window back |
+| Right-click the tray icon → **退出 (Exit)** | Quit the program completely |
 
-- [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) or later
-- [FFmpeg](https://github.com/BtbN/FFmpeg-Builds/releases) — `ffplay.exe` in the application directory or PATH
-- [libfdk-aac](https://github.com/mstorsjo/fdk-aac) — `libfdk-aac-2.dll` in the application directory (required for screen mirroring audio)
+## Troubleshooting
 
-#### Build
+**The PC is not listed on the Apple device**
+
+- Make sure both are on the same Wi-Fi and not on a guest network (guest networks usually block device-to-device traffic)
+- Check Windows Firewall: Windows Security → Firewall → Allow an app through firewall → tick AirPlay
+- If the router has "AP isolation" enabled, devices cannot see each other
+
+**Picture but no sound / no sound at all**
+
+- Check that the correct speaker or headphone is the default playback device
+- Make sure no file was missed when extracting: `ffplay.exe`, `ffmpeg.exe` and `libfdk-aac-2.dll` must sit next to `AirPlay.exe`
+
+**Picture frozen**
+
+- Stop mirroring and start it again (iPhones send a full key frame only when mirroring starts, so a picture hidden for a long time may resume on a stale frame)
+
+**Change the name shown on Apple devices**
+
+Open `appsettings_win.json` next to the exe with Notepad, change `Instance`, then restart:
+
+```json
+"AirPlayReceiver": {
+  "Instance": "My PC",
+  "AirTunesPort": 5000,
+  "AirPlayPort": 7000
+}
+```
+
+**Logs**
+
+Logs are written to `%LOCALAPPDATA%\AirPlay\Logs` (paste this into the File Explorer address bar).
+
+## Build from source (developers)
+
+You need the .NET 10 SDK and `ffplay.exe` / `ffmpeg.exe` (in PATH or next to the exe).
 
 ```bash
-dotnet restore AirPlay.sln
-dotnet build AirPlay.sln --configuration Release
+dotnet build AirPlay/AirPlay.csproj -c Release
 ```
 
-#### Run
-
-1. Start the application
-2. On your Apple device, open Control Center → Screen Mirroring → select your PC
-3. The mirroring video window (ffplay) will launch automatically
-
-> **Fallback**: If ffplay is not found, you can manually open a video player:
-> ```bash
-> ffplay -f h264 -probesize 32768 -analyzeduration 0 -fflags nobuffer+discardcorrupt -flags low_delay -framedrop -avioflags direct -vf setpts=0 \\.\pipe\AirPlayVideo
-> ```
-
-## Building libfdk-aac on Windows
-
-The `libfdk-aac-2.dll` is required for decoding AAC-ELD audio during screen mirroring. You can build it from source:
-
-1. Install [MSYS2](https://www.msys2.org/)
-2. Open MSYS2 MinGW 64-bit terminal and run:
-   ```bash
-   pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake make
-   git clone https://github.com/mstorsjo/fdk-aac.git
-   cd fdk-aac
-   mkdir build && cd build
-   cmake -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON ..
-   cmake --build .
-   ```
-3. Copy the resulting `libfdk-aac-2.dll` to the application directory
-
-## Architecture
-
-```
-Apple Device ──AirPlay──► AirPlay Receiver (.NET 8)
-                              │
-                    ┌─────────┼─────────┐
-                    ▼         ▼         ▼
-              Screen Mirror  Audio    Volume
-              (H.264+AAC)   (ALAC)   Control
-                    │         │
-              ┌─────┴───┐    │
-              ▼         ▼    ▼
-          ffplay     FDK-AAC  NAudio
-        (auto-launch) Decoder  DirectSound
-```
-
-- **Video**: H.264 stream written to a named pipe, ffplay is auto-launched to display the mirroring window when a device connects
-- **Mirroring Audio**: AAC-ELD decoded by native FDK-AAC library via P/Invoke, output through NAudio DirectSound
-- **Streaming Audio**: ALAC/AAC decoded and output through NAudio DirectSound
+`build-release-debug.ps1` in the repository root offers a menu: build only, build a self-contained zip package, or build the same artifact GitHub CI produces. `libfdk-aac-2.dll` is checked in under `AirPlay/native/` and is copied to the output folder during build.
 
 ## Credits
 
-Based on open-source AirPlay protocol implementations. Special thanks to:
-- [SteeBono/airplayreceiver](https://github.com/SteeBono/airplayreceiver) — Original C# AirPlay receiver
+Thanks to these open-source projects:
+
+- [SteeBono/airplayreceiver](https://github.com/SteeBono/airplayreceiver) — original C# AirPlay receiver
 - [UxPlay](https://github.com/FDH2/UxPlay) — AirPlay protocol reference
-- [mstorsjo/fdk-aac](https://github.com/mstorsjo/fdk-aac) — FDK-AAC codec library
+- [mstorsjo/fdk-aac](https://github.com/mstorsjo/fdk-aac) — AAC codec library
+- [FFmpeg](https://ffmpeg.org/) — video playback and fallback audio decoding
 
 ## Disclaimer
 
-All resources in this repository are written using only open-source projects.
-The code and related resources are meant for educational purposes only.
-The author does not take any responsibility for the use that will be made of it.
+The code in this repository is for learning purposes only. The author takes no responsibility for how it is used. Do not use it to redistribute copyrighted content.
 
 ## License
 
 [MIT License](LICENSE)
+
+## Original project
+
+This is a fork of [YimingZhanshen/Airplay2OnWindows](https://github.com/YimingZhanshen/Airplay2OnWindows), with continued fixes and improvements (tray-based UI, embedded mirroring window, audio decoding fixes).
+
+The original implementation comes from [SteeBono/airplayreceiver](https://github.com/SteeBono/airplayreceiver).
