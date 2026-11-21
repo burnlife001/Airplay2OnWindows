@@ -17,5 +17,7 @@ namespace AirPlay
         Task StartListeners(CancellationToken cancellationToken);
 
         Task StartMdnsAsync();
+
+        Task StopListenersAsync();
     }
 }

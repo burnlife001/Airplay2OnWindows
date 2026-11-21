@@ -19,6 +19,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using AirPlay.Models.Enums;
+using AirPlay.Utils;
 
 namespace AirPlay.Decoders.Implementations
 {
@@ -91,7 +92,7 @@ namespace AirPlay.Decoders.Implementations
                         string line;
                         while ((line = reader.ReadLine()) != null)
                         {
-                            Console.WriteLine($"[DEBUG-FFMPEG-STDERR] {line}");
+                            DebugSessionLog.WriteLine($"[DEBUG-FFMPEG-STDERR] {line}");
                         }
                     }
                     catch { /* ignore */ }
@@ -122,7 +123,7 @@ namespace AirPlay.Decoders.Implementations
             {
                 _decodeCallCount++;
                 if (_decodeCallCount <= 3 || _decodeCallCount % 500 == 0)
-                    Console.WriteLine($"[DEBUG-FFMPEG] DecodeFrame called but process not ready: initialized={_initialized}, process={_ffmpegProcess != null}, hasExited={_ffmpegProcess?.HasExited}");
+                    DebugSessionLog.WriteLine($"[DEBUG-FFMPEG] DecodeFrame called but process not ready: initialized={_initialized}, process={_ffmpegProcess != null}, hasExited={_ffmpegProcess?.HasExited}");
                 return -1;
             }
 
@@ -139,7 +140,7 @@ namespace AirPlay.Decoders.Implementations
                 _ffmpegInput.Flush();
 
                 if (_decodeCallCount <= 3)
-                    Console.WriteLine($"[DEBUG-FFMPEG] Wrote LOAS frame #{_decodeCallCount}: inputLen={input.Length}, loasLen={loasFrame.Length}, expecting {_pcmOutputSize} bytes PCM output");
+                    DebugSessionLog.WriteLine($"[DEBUG-FFMPEG] Wrote LOAS frame #{_decodeCallCount}: inputLen={input.Length}, loasLen={loasFrame.Length}, expecting {_pcmOutputSize} bytes PCM output");
 
                 // Read decoded PCM from FFmpeg stdout
                 int bytesToRead = _pcmOutputSize;
@@ -161,14 +162,14 @@ namespace AirPlay.Decoders.Implementations
                 _totalFramesDecoded++;
 
                 if (_decodeCallCount <= 5 || _decodeCallCount % 500 == 0)
-                    Console.WriteLine($"[DEBUG-FFMPEG] Frame #{_decodeCallCount}: read {totalRead}/{bytesToRead} bytes (attemptsLeft={maxAttempts}), totalDecoded={_totalFramesDecoded}");
+                    DebugSessionLog.WriteLine($"[DEBUG-FFMPEG] Frame #{_decodeCallCount}: read {totalRead}/{bytesToRead} bytes (attemptsLeft={maxAttempts}), totalDecoded={_totalFramesDecoded}");
 
                 if (totalRead < bytesToRead)
                 {
                     // Partial read - zero fill the rest
                     Array.Clear(output, totalRead, bytesToRead - totalRead);
                     if (_decodeCallCount <= 10)
-                        Console.WriteLine($"[DEBUG-FFMPEG] WARNING: Partial read! Only {totalRead} of {bytesToRead} bytes, zero-filled remainder");
+                        DebugSessionLog.WriteLine($"[DEBUG-FFMPEG] WARNING: Partial read! Only {totalRead} of {bytesToRead} bytes, zero-filled remainder");
                 }
 
                 return 0;
@@ -176,7 +177,7 @@ namespace AirPlay.Decoders.Implementations
             catch (Exception ex)
             {
                 if (_decodeCallCount <= 5 || _decodeCallCount % 500 == 0)
-                    Console.WriteLine($"[DEBUG-FFMPEG] DecodeFrame exception #{_decodeCallCount}: {ex.GetType().Name}: {ex.Message}");
+                    DebugSessionLog.WriteLine($"[DEBUG-FFMPEG] DecodeFrame exception #{_decodeCallCount}: {ex.GetType().Name}: {ex.Message}");
                 return -1;
             }
         }

@@ -1,8 +1,9 @@
-﻿using System;
+using System;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
+using AirPlay.Utils;
 
 namespace AirPlay.Listeners
 {
@@ -33,7 +34,7 @@ namespace AirPlay.Listeners
         {
             var source = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cancellationTokenSource.Token);
 
-            Console.WriteLine($"[DEBUG-UDP] StartAsync: cSocket on port {_cPort}, dSocket on port {_dPort}");
+            DebugSessionLog.WriteLine($"[DEBUG-UDP] StartAsync: cSocket on port {_cPort}, dSocket on port {_dPort}");
             Task.Run(() => OnRawCSocketAsync(_cSocket, source.Token), source.Token);
             Task.Run(() => OnRawDSocketAsync(_dSocket, source.Token), source.Token);
 
@@ -42,12 +43,12 @@ namespace AirPlay.Listeners
 
         public override Task StopAsync()
         {
-            Console.WriteLine("[DEBUG-UDP] StopAsync called - cancelling tokens and closing sockets");
+            DebugSessionLog.WriteLine("[DEBUG-UDP] StopAsync called - cancelling tokens and closing sockets");
             _cancellationTokenSource.Cancel();
 
             _cSocket.Close(CloseTimeout);
             _dSocket.Close(CloseTimeout);
-            Console.WriteLine("[DEBUG-UDP] StopAsync completed");
+            DebugSessionLog.WriteLine("[DEBUG-UDP] StopAsync completed");
 
             return Task.CompletedTask;
         }

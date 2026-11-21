@@ -25,6 +25,9 @@ namespace AirPlay.Listeners
         private byte[] _og = new byte[16];
         private int _nextDecryptCount;
 
+        // 单帧负载上限：PayloadSize 完全由对端控制，必须限制，避免 new byte[] 直接 OOM。
+        private const int MaxPayloadSize = 8 * 1024 * 1024;
+
         public MirroringListener(IRtspReceiver receiver, string sessionId, ushort port) : base(port, true)
         {
             _receiver = receiver;
@@ -35,122 +38,225 @@ namespace AirPlay.Listeners
 
         public override async Task OnRawReceivedAsync(TcpClient client, NetworkStream stream, CancellationToken cancellationToken)
         {
-            // Get session by active-remove header value
-            var session = await SessionManager.Current.GetSessionAsync(_sessionId);
-
-            // If we have not decripted session AesKey
-            if (session.DecryptedAesKey == null)
-            {
-                byte[] decryptedAesKey = new byte[16];
-                _omgHax.DecryptAesKey(session.KeyMsg, session.AesKey, decryptedAesKey);
-                session.DecryptedAesKey = decryptedAesKey;
-            }
-
-            // Reset cipher state for new connection
-            _nextDecryptCount = 0;
-            Array.Clear(_og, 0, _og.Length);
-
-            InitAesCtrCipher(session.DecryptedAesKey, session.EcdhShared, session.StreamConnectionId);
-
-            var headerBuffer = new byte[128];
-
             try
             {
-                do
+                // Get session by active-remove header value
+                var session = await SessionManager.Current.GetSessionAsync(_sessionId);
+
+                // If we have not decripted session AesKey
+                if (session.DecryptedAesKey == null)
                 {
-                    // Read the first 4 bytes to determine packet type
-                    int readStart = 0;
-                    int ret;
+                    byte[] decryptedAesKey = new byte[16];
+                    _omgHax.DecryptAesKey(session.KeyMsg, session.AesKey, decryptedAesKey);
+                    session.DecryptedAesKey = decryptedAesKey;
+                }
+
+                // Reset cipher state for new connection
+                _nextDecryptCount = 0;
+                Array.Clear(_og, 0, _og.Length);
+
+                InitAesCtrCipher(session.DecryptedAesKey, session.EcdhShared, session.StreamConnectionId);
+
+                var headerBuffer = new byte[128];
+
+                try
+                {
                     do
                     {
-                        ret = await stream.ReadAsync(headerBuffer, readStart, 4 - readStart, cancellationToken);
-                        if (ret <= 0)
-                        {
-                            goto exit_loop;
-                        }
-                        readStart += ret;
-                    } while (readStart < 4);
-
-                    if ((headerBuffer[0] == 80 && headerBuffer[1] == 79 && headerBuffer[2] == 83 && headerBuffer[3] == 84) || (headerBuffer[0] == 71 && headerBuffer[1] == 69 && headerBuffer[2] == 84))
-                    {
-                        // Request is POST or GET (skip)
-                        continue;
-                    }
-
-                    // Read remaining 124 bytes of the 128-byte header
-                    do
-                    {
-                        ret = await stream.ReadAsync(headerBuffer, readStart, 128 - readStart, cancellationToken);
-                        if (ret <= 0)
-                        {
-                            goto exit_loop;
-                        }
-                        readStart += ret;
-                    } while (readStart < 128);
-
-                    var header = new MirroringHeader(headerBuffer);
-
-                    // Update session dimensions from codec config (PayloadType 1)
-                    if (header.PayloadType == 1)
-                    {
-                        if (header.WidthSource > 0)
-                            session.WidthSource = header.WidthSource;
-                        if (header.HeightSource > 0)
-                            session.HeightSource = header.HeightSource;
-                    }
-
-                    if (header.PayloadSize <= 0)
-                    {
-                        continue;
-                    }
-
-                    try
-                    {
-                        byte[] payload = new byte[header.PayloadSize];
-
-                        readStart = 0;
+                        // Read the first 4 bytes to determine packet type
+                        int readStart = 0;
+                        int ret;
                         do
                         {
-                            ret = await stream.ReadAsync(payload, readStart, header.PayloadSize - readStart, cancellationToken);
+                            ret = await stream.ReadAsync(headerBuffer, readStart, 4 - readStart, cancellationToken);
                             if (ret <= 0)
                             {
-                                goto exit_loop;
+                                return;
                             }
                             readStart += ret;
-                        } while (readStart < header.PayloadSize);
+                        } while (readStart < 4);
 
-                        if (header.PayloadType == 0)
+                        if ((headerBuffer[0] == 80 && headerBuffer[1] == 79 && headerBuffer[2] == 83 && headerBuffer[3] == 84) || (headerBuffer[0] == 71 && headerBuffer[1] == 69 && headerBuffer[2] == 84))
                         {
-                            DecryptVideoData(payload, out byte[] output);
-                            // Use the PTS from this specific frame's header
-                            long framePts = header.PayloadPts;
-                            int width = session.WidthSource ?? 1920;
-                            int height = session.HeightSource ?? 1080;
-                            ProcessVideo(output, session.SpsPps, framePts, width, height);
+                            // Request is POST or GET: 必须完整消费头部与 body，否则残留字节会让后续二进制帧解析失步。
+                            if (!await ConsumeHttpRequestAsync(stream, headerBuffer, 4, cancellationToken).ConfigureAwait(false))
+                            {
+                                return;
+                            }
+                            continue;
                         }
-                        else if (header.PayloadType == 1)
+
+                        // Read remaining 124 bytes of the 128-byte header
+                        do
                         {
-                            ProcessSpsPps(payload, out byte[] spsPps);
-                            session.SpsPps = spsPps;
+                            ret = await stream.ReadAsync(headerBuffer, readStart, 128 - readStart, cancellationToken);
+                            if (ret <= 0)
+                            {
+                                return;
+                            }
+                            readStart += ret;
+                        } while (readStart < 128);
+
+                        var header = new MirroringHeader(headerBuffer);
+
+                        // Update session dimensions from codec config (PayloadType 1)
+                        if (header.PayloadType == 1)
+                        {
+                            if (header.WidthSource > 0)
+                                session.WidthSource = header.WidthSource;
+                            if (header.HeightSource > 0)
+                                session.HeightSource = header.HeightSource;
                         }
-                    }
-                    catch (Exception e)
-                    {
-                        Console.WriteLine($"Mirroring error: {e}");
-                    }
 
-                    // Save current session periodically
-                    await SessionManager.Current.CreateOrUpdateSessionAsync(_sessionId, session);
+                        if (header.PayloadSize <= 0)
+                        {
+                            continue;
+                        }
 
-                } while (client.Connected && stream.CanRead && !cancellationToken.IsCancellationRequested);
+                        if (header.PayloadSize > MaxPayloadSize)
+                        {
+                            // 超限视为流被污染：断开该连接，交给 finally 释放镜像状态。
+                            DebugSessionLog.Write("H7", "MirroringListener.OnRawReceivedAsync", "payload size exceeds limit, closing connection", new { sessionId = _sessionId, listenerId = ListenerId, payloadSize = header.PayloadSize, payloadType = header.PayloadType, limit = MaxPayloadSize });
+                            return;
+                        }
+
+                        try
+                        {
+                            byte[] payload = new byte[header.PayloadSize];
+
+                            readStart = 0;
+                            do
+                            {
+                                ret = await stream.ReadAsync(payload, readStart, header.PayloadSize - readStart, cancellationToken);
+                                if (ret <= 0)
+                                {
+                                    return;
+                                }
+                                readStart += ret;
+                            } while (readStart < header.PayloadSize);
+
+                            if (header.PayloadType == 0)
+                            {
+                                DecryptVideoData(payload, out byte[] output);
+                                // Use the PTS from this specific frame's header
+                                long framePts = header.PayloadPts;
+                                int width = session.WidthSource ?? 1920;
+                                int height = session.HeightSource ?? 1080;
+                                ProcessVideo(output, session.SpsPps, framePts, width, height);
+                            }
+                            else if (header.PayloadType == 1)
+                            {
+                                ProcessSpsPps(payload, out byte[] spsPps);
+                                session.SpsPps = spsPps;
+                            }
+                        }
+                        catch (Exception e)
+                        {
+                            Console.WriteLine($"Mirroring error: {e}");
+                        }
+
+                        // Save current session periodically
+                        await SessionManager.Current.CreateOrUpdateSessionAsync(_sessionId, session);
+
+                    } while (client.Connected && stream.CanRead && !cancellationToken.IsCancellationRequested);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Normal shutdown - cancellation was requested
+                }
             }
-            catch (OperationCanceledException)
+            finally
             {
-                // Normal shutdown - cancellation was requested
+                Console.WriteLine($"Closing mirroring connection..");
+                DebugSessionLog.Write("H7", "MirroringListener.OnRawReceivedAsync", "releasing raw mirroring connection", new { sessionId = _sessionId, listenerId = ListenerId });
+                try
+                {
+                    await SessionManager.Current.ReleaseMirroringAsync(
+                        _sessionId,
+                        _receiver.OnMirroringStopped,
+                        "mirroring-tcp-closed",
+                        this).ConfigureAwait(false);
+                    DebugSessionLog.Write("H7", "MirroringListener.OnRawReceivedAsync", "raw mirroring connection released", new { sessionId = _sessionId, listenerId = ListenerId });
+                }
+                catch (Exception ex)
+                {
+                    DebugSessionLog.Write("H7", "MirroringListener.OnRawReceivedAsync", "raw mirroring cleanup failed", new { sessionId = _sessionId, listenerId = ListenerId, error = ex.GetType().Name, message = ex.Message });
+                }
+            }
+        }
+
+        // 单条 HTTP 请求（头部 + body）上限：长度完全由对端控制，必须有界，避免无界内存/阻塞。
+        private const int MaxHttpRequestSize = 64 * 1024;
+
+        /// <summary>
+        /// 完整消费一条 HTTP 请求：逐字节读到空行结束的头部，再按 Content-Length 丢弃 body。
+        /// 返回 false 表示连接已不可用（EOF/超限/取消），调用方应结束读取循环。
+        /// 头部逐字节读取是为了不越界多读，避免吃掉后续二进制帧的开头。
+        /// </summary>
+        private async Task<bool> ConsumeHttpRequestAsync(NetworkStream stream, byte[] prefix, int prefixLength, CancellationToken cancellationToken)
+        {
+            var header = new byte[MaxHttpRequestSize];
+            Array.Copy(prefix, header, prefixLength);
+            int count = prefixLength;
+
+            while (true)
+            {
+                if (count >= header.Length)
+                {
+                    DebugSessionLog.Write("H7", "MirroringListener.ConsumeHttpRequestAsync", "http request header exceeds limit, closing connection", new { sessionId = _sessionId, listenerId = ListenerId, limit = MaxHttpRequestSize });
+                    return false;
+                }
+
+                int read = await stream.ReadAsync(header, count, 1, cancellationToken).ConfigureAwait(false);
+                if (read <= 0)
+                {
+                    return false;
+                }
+                count += read;
+
+                if (count >= 4 &&
+                    header[count - 4] == (byte)'\r' && header[count - 3] == (byte)'\n' &&
+                    header[count - 2] == (byte)'\r' && header[count - 1] == (byte)'\n')
+                {
+                    break;
+                }
             }
 
-            exit_loop:
-            Console.WriteLine($"Closing mirroring connection..");
+            // 头部已结束（count 处）；Content-Length 缺失或非法按 0 处理。
+            int contentLength = 0;
+            var headerText = Encoding.ASCII.GetString(header, 0, count);
+            foreach (var line in headerText.Split(new[] { "\r\n" }, StringSplitOptions.None))
+            {
+                if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!int.TryParse(line.Substring("Content-Length:".Length).Trim(), out contentLength))
+                    {
+                        contentLength = 0;
+                    }
+                    break;
+                }
+            }
+
+            if (contentLength < 0 || contentLength > MaxHttpRequestSize)
+            {
+                DebugSessionLog.Write("H7", "MirroringListener.ConsumeHttpRequestAsync", "http body length exceeds limit, closing connection", new { sessionId = _sessionId, listenerId = ListenerId, contentLength, limit = MaxHttpRequestSize });
+                return false;
+            }
+
+            // 按剩余长度精确丢弃 body，不多读，保证下一条二进制帧起始位置正确。
+            var discard = new byte[8192];
+            int remaining = contentLength;
+            while (remaining > 0)
+            {
+                int read = await stream.ReadAsync(discard, 0, Math.Min(discard.Length, remaining), cancellationToken).ConfigureAwait(false);
+                if (read <= 0)
+                {
+                    return false;
+                }
+                remaining -= read;
+            }
+
+            return true;
         }
 
         private void DecryptVideoData(byte[] videoData, out byte[] output)
@@ -259,6 +365,26 @@ namespace AirPlay.Listeners
 
         private void ProcessSpsPps(byte[] payload, out byte[] spsPps)
         {
+            spsPps = null;
+
+            // 最小长度：8 字节 AVCDecoderConfigurationRecord + 2 字节 pps 长度 + 至少 1 字节 pps。
+            if (payload == null || payload.Length < 11)
+            {
+                return;
+            }
+
+            int spsLen = ((payload[6] & 255) << 8) + (payload[7] & 255);
+            if (spsLen <= 0 || payload.Length < 11 + spsLen)
+            {
+                return;
+            }
+
+            int ppsLen = ((payload[spsLen + 9] & 0xFF) << 8) + (payload[spsLen + 10] & 0xFF);
+            if (ppsLen <= 0 || payload.Length < 11 + spsLen + ppsLen)
+            {
+                return;
+            }
+
             var h264 = new H264Codec();
 
             h264.Version = payload[0];
@@ -267,13 +393,13 @@ namespace AirPlay.Listeners
             h264.Level = payload[3];
             h264.Reserved6AndNal = payload[4];
             h264.Reserved3AndSps = payload[5];
-            h264.LengthOfSps = (short)(((payload[6] & 255) << 8) + (payload[7] & 255));
+            h264.LengthOfSps = (short)spsLen;
 
             var sequence = new byte[h264.LengthOfSps];
             Array.Copy(payload, 8, sequence, 0, h264.LengthOfSps);
             h264.SequenceParameterSet = sequence;
             h264.NumberOfPps = payload[h264.LengthOfSps + 8];
-            h264.LengthOfPps = (short)(((payload[h264.LengthOfSps + 9] & 0xFF) << 8) + (payload[h264.LengthOfSps + 10] & 0xFF));
+            h264.LengthOfPps = (short)ppsLen;
 
             var picture = new byte[h264.LengthOfPps];
             Array.Copy(payload, h264.LengthOfSps + 11, picture, 0, h264.LengthOfPps);

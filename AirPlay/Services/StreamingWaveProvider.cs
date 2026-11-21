@@ -18,8 +18,6 @@ namespace AirPlay.Services
 
         public WaveFormat WaveFormat { get; }
         public int QueuedBuffers => _queue.Count;
-        public long TotalBytesRead { get; private set; }
-        public DateTime LastReadTime { get; private set; } = DateTime.UtcNow;
 
         /// <summary>
         /// Volume level (0.0 = mute, 1.0 = full volume).
@@ -71,7 +69,6 @@ namespace AirPlay.Services
         /// </summary>
         public int Read(byte[] buffer, int offset, int count)
         {
-            LastReadTime = DateTime.UtcNow;
             int bytesWritten = 0;
 
             while (bytesWritten < count)
@@ -103,8 +100,6 @@ namespace AirPlay.Services
                     bytesWritten = count;
                 }
             }
-
-            TotalBytesRead += bytesWritten;
 
             // Apply volume scaling to 16-bit PCM samples
             if (_volume < 0.999f)

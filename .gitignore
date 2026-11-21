@@ -361,3 +361,6 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 
+# codebase-memory-mcp 索引缓存
+.codebase-memory/
+

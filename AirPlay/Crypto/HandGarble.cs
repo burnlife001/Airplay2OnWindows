@@ -115,7 +115,9 @@ namespace AirPlay
 
             tmp3 = (A | B);
 
-            C = (byte)(((((A | B) ^ 0xffffffa6) | (buffer3[0] & 0xff)) & 4) | (((A | B) ^ 0xffffffa6) & (buffer3[0] & 0xff)));
+            // 0xffffffa6 是 uint 字面量，直接参与位运算会把整个表达式提升为 long 并触发 CS0675，
+            // 显式转成 int 保持 32 位语义（结果只取低 8 位，取值不变）。
+            C = (byte)(((((A | B) ^ unchecked((int)0xffffffa6)) | (buffer3[0] & 0xff)) & 4) | (((A | B) ^ unchecked((int)0xffffffa6)) & (buffer3[0] & 0xff)));
             buffer1[47] = (byte)(((buffer2[(buffer1[89] & 0xff) % 35] & 0xff) + C) ^ (buffer1[47] & 0xff));
 
             buffer3[36] = (byte)(((Rol8((byte)((tmp & 179) + 68), 2) & (buffer0[3] & 0xff)) | (tmp2 & ~(buffer0[3] & 0xff))) - 15);
