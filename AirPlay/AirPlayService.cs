@@ -1,10 +1,12 @@
-﻿using AirPlay.Models.Configs;
+using AirPlay.Models.Configs;
 using AirPlay.Services;
+using AirPlay.Services.Implementations;
 using AirPlay.Utils;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -27,6 +29,34 @@ namespace AirPlay
         {
             _airPlayReceiver = airPlayReceiver ?? throw new ArgumentNullException(nameof(airPlayReceiver));
             _dConfig = dConfig?.Value ?? throw new ArgumentNullException(nameof(dConfig));
+        }
+
+        private void ScheduleHandleFfplayExited()
+        {
+            // fire-and-forget 必须自己兜住异常，否则镜像状态释放失败会被静默吞掉。
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await HandleFfplayExitedAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    DebugSessionLog.Write("H7", "AirPlayService.HandleFfplayExited", "release mirroring after ffplay exit failed", new { error = ex.GetType().Name, message = ex.Message });
+                }
+            });
+        }
+
+        private async Task HandleFfplayExitedAsync()
+        {
+            if (_airPlayReceiver is not AirPlayReceiver receiver)
+            {
+                return;
+            }
+
+            await SessionManager.Current.ReleaseAllMirroringAsync(
+                receiver.OnMirroringStopped,
+                "ffplay-exited").ConfigureAwait(false);
         }
 
         private void RecreateAudioOutput()
@@ -55,6 +85,11 @@ namespace AirPlay
 
         public async Task StartAsync(CancellationToken cancellationToken)
         {
+            // #region agent log
+            DebugSessionLog.Write("H3", "AirPlayService.cs:StartAsync", "StartAsync begin", null);
+            // #endregion
+            try
+            {
 #if DUMP
             var bPath = _dConfig.Path;
             var fPath = Path.Combine(bPath, "frames/");
@@ -98,10 +133,67 @@ namespace AirPlay
 
             // Initialize video output service (will be started/stopped per mirroring session)
             _videoOutput = new VideoOutputService();
+            _videoOutput.FfplayExited += (_, _) => ScheduleHandleFfplayExited();
             Console.WriteLine("Video output service ready (will auto-launch ffplay when mirroring starts)");
 
             await _airPlayReceiver.StartListeners(cancellationToken);
-            await _airPlayReceiver.StartMdnsAsync().ConfigureAwait(false);
+            // #region agent log
+            DebugSessionLog.Write("H3", "AirPlayService.cs:StartAsync", "StartListeners completed", null);
+            // #endregion
+                    await _airPlayReceiver.StartMdnsAsync().ConfigureAwait(false);
+                    // #region agent log
+                    DebugSessionLog.Write("H3", "AirPlayService.cs:StartAsync", "StartMdnsAsync completed", null);
+                    // #endregion
+                    // #region agent log
+#if DEBUG
+                    _ = Task.Run(async () =>
+                    {
+                        var proc = Process.GetCurrentProcess();
+                        var lastCpu = proc.TotalProcessorTime;
+                        var lastWall = DateTime.UtcNow;
+                        while (!cancellationToken.IsCancellationRequested)
+                        {
+                            try
+                            {
+                                await Task.Delay(5000, cancellationToken).ConfigureAwait(false);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                break;
+                            }
+
+                            proc.Refresh();
+                            var nowCpu = proc.TotalProcessorTime;
+                            var nowWall = DateTime.UtcNow;
+                            var wallMs = (nowWall - lastWall).TotalMilliseconds;
+                            var cpuPct = wallMs > 0 ? (nowCpu - lastCpu).TotalMilliseconds / wallMs * 100.0 : 0;
+                            lastCpu = nowCpu;
+                            lastWall = nowWall;
+                            DebugSessionLog.Write("H1", "AirPlayService.heartbeat", "process sample", new
+                            {
+                                cpuPct = Math.Round(cpuPct, 1),
+                                wsMb = proc.WorkingSet64 / (1024 * 1024),
+                                threads = proc.Threads.Count,
+                                cZero = DebugSessionLog.CZeroReads,
+                                cErr = DebugSessionLog.CErrors,
+                                cPkt = DebugSessionLog.CPackets,
+                                dZero = DebugSessionLog.DZeroReads,
+                                dErr = DebugSessionLog.DErrors,
+                                dPkt = DebugSessionLog.DPackets,
+                                rtspDepth = DebugSessionLog.RtspDepth,
+                                nicEvents = DebugSessionLog.NicEvents,
+                            });
+                        }
+                    }, cancellationToken);
+#endif
+                    // #endregion
+
+#if USE_WINDOWS_TRAY
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                TrayStartupNotifier.ShowReady();
+            }
+#endif
 
             _airPlayReceiver.OnSetVolumeReceived += (s, e) =>
             {
@@ -168,7 +260,7 @@ namespace AirPlay
                     {
                         if (e.Data[i] != 0) { allZeros = false; break; }
                     }
-                    Console.WriteLine($"[DEBUG-PCM] OnPCMDataReceived #{pcmReceivedCount}: len={e.Length}, allZeros={allZeros}");
+                    DebugSessionLog.WriteLine($"[DEBUG-PCM] OnPCMDataReceived #{pcmReceivedCount}: len={e.Length}, allZeros={allZeros}");
                 }
 
                 // Play audio through speakers
@@ -181,40 +273,108 @@ namespace AirPlay
                 _audiobuf.AddRange(e.Data);
 #endif
             };
+            }
+            catch (Exception ex)
+            {
+                // #region agent log
+                DebugSessionLog.Write("H3", "AirPlayService.cs:StartAsync", "StartAsync failed", new { type = ex.GetType().Name, message = ex.Message, stack = ex.StackTrace });
+                // #endregion
+#if USE_WINDOWS_TRAY
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    TrayStartupNotifier.ShowError($"启动失败：{ex.Message}");
+                }
+#endif
+                throw;
+            }
         }
 
         public Task StopAsync(CancellationToken cancellationToken)
         {
-            _audioOutput?.Dispose();
-            _audioOutput = null;
+            // #region agent log
+            DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "enter", new { thread = Environment.CurrentManagedThreadId });
+            // #endregion
+            return StopAsyncCore();
+        }
 
-            _videoOutput?.Dispose();
-            _videoOutput = null;
+        private async Task StopAsyncCore()
+        {
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                await _airPlayReceiver.StopListenersAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                // #region agent log
+                DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "StopListenersAsync failed", new { type = ex.GetType().Name, message = ex.Message });
+                // #endregion
+            }
+
+            // 与回调（OnPCMDataReceived/OnSetVolumeReceived/RecreateAudioOutput）同一把锁做交换，
+            // 只在锁内取引用并置 null，实际 Dispose 放到锁外，避免持锁期间 Dispose 触发回调造成死锁。
+            DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "audio Dispose enter", new { hasAudioOutput = _audioOutput != null });
+            AudioOutputService audioOutput;
+            lock (_audioOutputLock)
+            {
+                audioOutput = _audioOutput;
+                _audioOutput = null;
+            }
+            audioOutput?.Dispose();
+            DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "audio Dispose exit", new { elapsedMs = stopwatch.ElapsedMilliseconds });
+
+            // VideoOutputService.Dispose 可能等到 ffplay 退出并触发 FfplayExited -> OnMirroringStopped 回调，
+            // 因此同样只在锁内交换引用，锁外 Dispose。
+            DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "video Dispose enter", new { hasVideoOutput = _videoOutput != null });
+            VideoOutputService videoOutput;
+            lock (_videoOutputLock)
+            {
+                videoOutput = _videoOutput;
+                _videoOutput = null;
+            }
+            videoOutput?.Dispose();
+            DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "video Dispose exit", new { elapsedMs = stopwatch.ElapsedMilliseconds });
 
 #if DUMP
             // DUMP WAV AUDIO
             var bPath = _dConfig.Path;
+            DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "DUMP header enter", new { path = bPath, bytes = _audiobuf.Count });
             using (var wr = new FileStream($"{bPath}dequeued.wav", FileMode.Create))
             {
                 var header = Utilities.WriteWavHeader(2, 44100, 16, (uint)_audiobuf.Count);
                 wr.Write(header, 0, header.Length);
             }
+            DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "DUMP header exit", null);
 
             using (FileStream writer = new FileStream($"{bPath}dequeued.wav", FileMode.Append))
             {
                 writer.Write(_audiobuf.ToArray(), 0, _audiobuf.Count);
             }
+            DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "DUMP samples written", new { bytes = _audiobuf.Count, elapsedMs = stopwatch.ElapsedMilliseconds });
 #endif
-            return Task.CompletedTask;
+            // #region agent log
+            DebugSessionLog.Write("H6", "AirPlayService.StopAsync", "exit", new { elapsedMs = stopwatch.ElapsedMilliseconds });
+            // #endregion
         }
 
         public void Dispose()
         {
-            _audioOutput?.Dispose();
-            _audioOutput = null;
+            // 与 StopAsyncCore 一致：锁内交换引用，锁外 Dispose，避免回调持有对象时被释放或互等。
+            AudioOutputService audioOutput;
+            lock (_audioOutputLock)
+            {
+                audioOutput = _audioOutput;
+                _audioOutput = null;
+            }
+            audioOutput?.Dispose();
 
-            _videoOutput?.Dispose();
-            _videoOutput = null;
+            VideoOutputService videoOutput;
+            lock (_videoOutputLock)
+            {
+                videoOutput = _videoOutput;
+                _videoOutput = null;
+            }
+            videoOutput?.Dispose();
 
             if (_airPlayReceiver is IDisposable disposable)
             {

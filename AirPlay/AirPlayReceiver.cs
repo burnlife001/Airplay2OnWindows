@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using AirPlay.Listeners;
 using AirPlay.Models;
 using AirPlay.Models.Configs;
+using AirPlay.Utils;
 using Makaretu.Dns;
 using Microsoft.Extensions.Options;
 
@@ -26,6 +27,7 @@ namespace AirPlay
         public const string AirTunesType = "_raop._tcp";
 
         private MulticastService _mdns = null;
+        private ServiceDiscovery _serviceDiscovery = null;
         private AirTunesListener _airTunesListener = null;
         private readonly string _instance;
         private readonly ushort _airTunesPort;
@@ -37,16 +39,45 @@ namespace AirPlay
             _airTunesPort = aprConfig?.Value?.AirTunesPort ?? 5000;
             _airPlayPort = aprConfig?.Value?.AirPlayPort ?? 7000;
             _deviceId = aprConfig?.Value?.DeviceMacAddress ?? "11:22:33:44:55:66";
-            _instance = aprConfig?.Value?.Instance ?? throw new ArgumentNullException("apr.instance");
+            _instance = ExpandInstance(aprConfig?.Value?.Instance);
 
             var dConfig = dumpConfig?.Value ?? throw new ArgumentNullException(nameof(dumpConfig));
 
             _airTunesListener = new AirTunesListener(this, _airTunesPort, _airPlayPort, dConfig);
         }
 
+        // 手机端显示的设备名：支持 {MachineName} / {UserName} 占位符，缺省用“机器名:用户名”
+        private static string ExpandInstance(string configured)
+        {
+            if (string.IsNullOrWhiteSpace(configured))
+            {
+                return $"{Environment.MachineName}:{Environment.UserName}";
+            }
+
+            return configured
+                .Replace("{MachineName}", Environment.MachineName)
+                .Replace("{UserName}", Environment.UserName);
+        }
+
         public async Task StartListeners(CancellationToken cancellationToken)
         {
             await _airTunesListener.StartAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task StopListenersAsync()
+        {
+            // #region agent log
+            DebugSessionLog.Write("H6", "AirPlayReceiver.StopListenersAsync", "enter", new { hasListener = _airTunesListener != null, hasMdns = _mdns != null });
+            // #endregion
+            if (_airTunesListener != null)
+            {
+                await _airTunesListener.StopAsync().ConfigureAwait(false);
+            }
+
+            StopMdns();
+            // #region agent log
+            DebugSessionLog.Write("H6", "AirPlayReceiver.StopListenersAsync", "exit", null);
+            // #endregion
         }
 
         public Task StartMdnsAsync()
@@ -65,8 +96,23 @@ namespace AirPlay
 
             var deviceIdInstance = string.Join(string.Empty, mDeviceId.Groups[2].Captures) + mDeviceId.Groups[3].Value;
 
-            _mdns = new MulticastService();
-            var sd = new ServiceDiscovery(_mdns);
+            var ipList = MulticastService.GetIPAddresses().Select(ip => ip.ToString()).ToList();
+            // #region agent log
+            DebugSessionLog.Write("H2", "AirPlayReceiver.cs:StartMdnsAsync", "Preparing mDNS advertise", new
+            {
+                instance = _instance,
+                deviceId = _deviceId,
+                airTunesPort = _airTunesPort,
+                airPlayPort = _airPlayPort,
+                ips = ipList,
+            });
+            // #endregion
+
+            _mdns = new MulticastService
+            {
+                UseIpv6 = false,
+            };
+            _serviceDiscovery = new ServiceDiscovery(_mdns);
 
             foreach (var ip in MulticastService.GetIPAddresses())
             {
@@ -75,10 +121,19 @@ namespace AirPlay
 
             _mdns.NetworkInterfaceDiscovered += (s, e) =>
             {
+#if DEBUG
+                var n = Interlocked.Increment(ref DebugSessionLog.NicEvents);
+                var names = e.NetworkInterfaces.Select(nic => nic.Name).ToArray();
+                if (n <= 3 || n % 20 == 0)
+                {
+                    DebugSessionLog.Write("H4", "AirPlayReceiver.cs:NetworkInterfaceDiscovered", "NIC event", new { n, names });
+                }
+
                 foreach (var nic in e.NetworkInterfaces)
                 {
-                    Console.WriteLine($"NIC '{nic.Name}'");
+                    DebugSessionLog.WriteLine($"NIC '{nic.Name}'");
                 }
+#endif
             };
 
             // Internally 'ServiceProfile' create the SRV record
@@ -121,12 +176,53 @@ namespace AirPlay
             airPlay.AddProperty("srcvers", "220.68");
             airPlay.AddProperty("vv", "2");
 
-            sd.Advertise(airTunes);
-            sd.Advertise(airPlay);
+            _serviceDiscovery.Advertise(airTunes);
+            _serviceDiscovery.Advertise(airPlay);
 
             _mdns.Start();
+            _serviceDiscovery.Announce(airTunes);
+            _serviceDiscovery.Announce(airPlay);
+
+            // #region agent log
+            DebugSessionLog.Write("H2", "AirPlayReceiver.cs:StartMdnsAsync", "mDNS started and services advertised", new
+            {
+                raopName = $"{deviceIdInstance}@{_instance}",
+                airPlayName = _instance,
+                useIpv6 = false,
+                primaryLanHint = ipList.FirstOrDefault(ip => ip.StartsWith("192.168.", StringComparison.Ordinal) || ip.StartsWith("10.", StringComparison.Ordinal)),
+            });
+            // #endregion
 
             return Task.CompletedTask;
+        }
+
+        private void StopMdns()
+        {
+            var serviceDiscovery = _serviceDiscovery;
+            var mdns = _mdns;
+            _serviceDiscovery = null;
+            _mdns = null;
+
+            try
+            {
+                serviceDiscovery?.Unadvertise();
+            }
+            catch (Exception ex)
+            {
+                // 下线公告失败也必须继续关闭 socket，避免重启时残留旧实例。
+                Console.WriteLine($"Failed to unadvertise mDNS services: {ex.Message}");
+            }
+            finally
+            {
+                try
+                {
+                    mdns?.Stop();
+                }
+                finally
+                {
+                    mdns?.Dispose();
+                }
+            }
         }
 
         public void OnSetVolume(decimal volume)
@@ -161,7 +257,13 @@ namespace AirPlay
 
         public void Dispose()
         {
-            _mdns?.Stop();
+            // #region agent log
+            DebugSessionLog.Write("H6", "AirPlayReceiver.Dispose", "before mDNS stop", new { hasMdns = _mdns != null, thread = Environment.CurrentManagedThreadId });
+            // #endregion
+            StopMdns();
+            // #region agent log
+            DebugSessionLog.Write("H6", "AirPlayReceiver.Dispose", "after mDNS stop", null);
+            // #endregion
         }
     }
 }

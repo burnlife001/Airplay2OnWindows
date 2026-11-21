@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Linq;
 using System.Net.Sockets;
@@ -50,7 +50,7 @@ namespace AirPlay.Listeners
 
         public override async Task OnRawCSocketAsync(Socket cSocket, CancellationToken cancellationToken)
         {
-            Console.WriteLine("[DEBUG-C] OnRawCSocketAsync started");
+            DebugSessionLog.WriteLine("[DEBUG-C] OnRawCSocketAsync started");
 
             _cSocket = cSocket;
 
@@ -59,7 +59,7 @@ namespace AirPlay.Listeners
 
             // Get session by active-remove header value
             var session = await SessionManager.Current.GetSessionAsync(_sessionId);
-            Console.WriteLine($"[DEBUG-C] Session loaded: AesKey={session.AesKey != null}, AesIv={session.AesIv != null}, EcdhShared={session.EcdhShared != null}, KeyMsg={session.KeyMsg != null}, AudioFormat={session.AudioFormat}");
+            DebugSessionLog.WriteLine($"[DEBUG-C] Session loaded: AesKey={session.AesKey != null}, AesIv={session.AesIv != null}, EcdhShared={session.EcdhShared != null}, KeyMsg={session.KeyMsg != null}, AudioFormat={session.AudioFormat}");
 
             // If we have not decripted session AesKey
             if (session.DecryptedAesKey == null)
@@ -67,12 +67,12 @@ namespace AirPlay.Listeners
                 byte[] decryptedAesKey = new byte[16];
                 _omgHax.DecryptAesKey(session.KeyMsg, session.AesKey, decryptedAesKey);
                 session.DecryptedAesKey = decryptedAesKey;
-                Console.WriteLine("[DEBUG-C] AES key decrypted");
+                DebugSessionLog.WriteLine("[DEBUG-C] AES key decrypted");
             }
 
             // Initialize decoder (needed for type 0x56 audio packets during mirroring)
             InitializeDecoder(session);
-            Console.WriteLine($"[DEBUG-C] Decoder initialized: type={_decoder?.Type}, outputLen={_decoder?.GetOutputStreamLength()}");
+            DebugSessionLog.WriteLine($"[DEBUG-C] Decoder initialized: type={_decoder?.Type}, outputLen={_decoder?.GetOutputStreamLength()}");
 
             await SessionManager.Current.CreateOrUpdateSessionAsync(_sessionId, session);
 
@@ -87,7 +87,7 @@ namespace AirPlay.Listeners
             int cSocketErrors = 0;
             string exitReason = "loop-end";
 
-            Console.WriteLine("[DEBUG-C] Entering receive loop...");
+            DebugSessionLog.WriteLine("[DEBUG-C] Entering receive loop...");
 
             do
             {
@@ -97,14 +97,31 @@ namespace AirPlay.Listeners
                     if(error != SocketError.Success)
                     {
                         cSocketErrors++;
+#if DEBUG
+                        var n = Interlocked.Increment(ref DebugSessionLog.CErrors);
+                        if (n == 1 || n == 1000 || n == 100000)
+                            DebugSessionLog.Write("H2", "AudioListener.cs:OnRawCSocketAsync", "C receive error", new { n, error = error.ToString(), packets = cPacketCount });
+#endif
                         if (cSocketErrors <= 5)
-                            Console.WriteLine($"[DEBUG-C] Socket.Receive error: {error}");
+                            DebugSessionLog.WriteLine($"[DEBUG-C] Socket.Receive error: {error}");
                         continue;
                     }
 
+                    if (cret == 0)
+                    {
+#if DEBUG
+                        var n = Interlocked.Increment(ref DebugSessionLog.CZeroReads);
+                        if (n == 1 || n == 1000 || n == 100000)
+                            DebugSessionLog.Write("H1", "AudioListener.cs:OnRawCSocketAsync", "C zero-byte receive", new { n, packets = cPacketCount });
+#endif
+                    }
+
                     cPacketCount++;
+#if DEBUG
+                    DebugSessionLog.CPackets = cPacketCount;
+#endif
                     if (cPacketCount == 1)
-                        Console.WriteLine($"[DEBUG-C] First packet received! size={cret}");
+                        DebugSessionLog.WriteLine($"[DEBUG-C] First packet received! size={cret}");
 
                     var mem = new MemoryStream(packet);
                     using (var reader = new BinaryReader(mem))
@@ -120,7 +137,7 @@ namespace AirPlay.Listeners
                             var data = reader.ReadBytes(cret - 4);
 
                             if (c56Count <= 3)
-                                Console.WriteLine($"[DEBUG-C] 0x56 packet #{c56Count}: dataLen={data.Length}, seqNum={(ushort)((data[2] << 8) | data[3])}");
+                                DebugSessionLog.WriteLine($"[DEBUG-C] 0x56 packet #{c56Count}: dataLen={data.Length}, seqNum={(ushort)((data[2] << 8) | data[3])}");
 
                             int ret;
                             lock (_bufferLock)
@@ -129,7 +146,7 @@ namespace AirPlay.Listeners
                             }
 
                             if (c56Count <= 3)
-                                Console.WriteLine($"[DEBUG-C] RaopBufferQueue returned: {ret}");
+                                DebugSessionLog.WriteLine($"[DEBUG-C] RaopBufferQueue returned: {ret}");
 
                             if (ret > 0) cQueuedCount++;
 
@@ -156,7 +173,7 @@ namespace AirPlay.Listeners
                             }
 
                             if (c56Count <= 3 && pcmBatch.Count > 0)
-                                Console.WriteLine($"[DEBUG-C] Dequeued {pcmBatch.Count} PCM frames, first len={pcmBatch[0].Length}");
+                                DebugSessionLog.WriteLine($"[DEBUG-C] Dequeued {pcmBatch.Count} PCM frames, first len={pcmBatch[0].Length}");
 
                             // Deliver PCM outside the lock to avoid blocking the data handler
                             foreach (var pcm in pcmBatch)
@@ -179,20 +196,20 @@ namespace AirPlay.Listeners
                             _sync_timestamp = rtp_timestamp;
 
                             if (c54Count <= 3)
-                                Console.WriteLine($"[DEBUG-C] 0x54 sync packet #{c54Count}: rtp_ts={rtp_timestamp}");
+                                DebugSessionLog.WriteLine($"[DEBUG-C] 0x54 sync packet #{c54Count}: rtp_ts={rtp_timestamp}");
                         }
                         else
                         {
                             cOtherCount++;
                             if (cOtherCount <= 5)
-                                Console.WriteLine($"[DEBUG-C] Unknown packet type: 0x{type_c:X2}, size={cret}");
+                                DebugSessionLog.WriteLine($"[DEBUG-C] Unknown packet type: 0x{type_c:X2}, size={cret}");
                         }
                     }
 
                     // Log summary periodically
                     if (cPacketCount % 500 == 0)
                     {
-                        Console.WriteLine($"[DEBUG-C] Stats: packets={cPacketCount}, 0x56={c56Count}, 0x54={c54Count}, other={cOtherCount}, queued={cQueuedCount}, dequeued={cDequeuedCount}, pcmDelivered={cPcmDelivered}, socketErrors={cSocketErrors}");
+                        DebugSessionLog.WriteLine($"[DEBUG-C] Stats: packets={cPacketCount}, 0x56={c56Count}, 0x54={c54Count}, other={cOtherCount}, queued={cQueuedCount}, dequeued={cDequeuedCount}, pcmDelivered={cPcmDelivered}, socketErrors={cSocketErrors}");
                     }
 
                     Array.Fill<byte>(packet, 0);
@@ -209,28 +226,28 @@ namespace AirPlay.Listeners
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[DEBUG-C] Exception in receive loop: {ex.GetType().Name}: {ex.Message}");
-                    Console.WriteLine($"[DEBUG-C] Stack trace: {ex.StackTrace}");
+                    DebugSessionLog.WriteLine($"[DEBUG-C] Exception in receive loop: {ex.GetType().Name}: {ex.Message}");
+                    DebugSessionLog.WriteLine($"[DEBUG-C] Stack trace: {ex.StackTrace}");
                 }
             } while (!cancellationToken.IsCancellationRequested);
 
             if (cancellationToken.IsCancellationRequested)
                 exitReason = "CancellationToken requested";
 
-            Console.WriteLine($"[DEBUG-C] Closing audio control socket. Reason: {exitReason}");
-            Console.WriteLine($"[DEBUG-C] Final stats: packets={cPacketCount}, 0x56={c56Count}, 0x54={c54Count}, other={cOtherCount}, queued={cQueuedCount}, dequeued={cDequeuedCount}, pcmDelivered={cPcmDelivered}, socketErrors={cSocketErrors}");
+            DebugSessionLog.WriteLine($"[DEBUG-C] Closing audio control socket. Reason: {exitReason}");
+            DebugSessionLog.WriteLine($"[DEBUG-C] Final stats: packets={cPacketCount}, 0x56={c56Count}, 0x54={c54Count}, other={cOtherCount}, queued={cQueuedCount}, dequeued={cDequeuedCount}, pcmDelivered={cPcmDelivered}, socketErrors={cSocketErrors}");
         }
 
         public override async Task OnRawDSocketAsync(Socket dSocket, CancellationToken cancellationToken)
         {
-            Console.WriteLine("[DEBUG-D] OnRawDSocketAsync started");
+            DebugSessionLog.WriteLine("[DEBUG-D] OnRawDSocketAsync started");
 
             // Each handler gets its own cipher instance (cipher is stateful, not thread-safe)
             var aesCbcDecrypt = CipherUtilities.GetCipher("AES/CBC/NoPadding");
 
             // Get current session
             var session = await SessionManager.Current.GetSessionAsync(_sessionId);
-            Console.WriteLine($"[DEBUG-D] Session loaded: AesKey={session.AesKey != null}, AesIv={session.AesIv != null}, EcdhShared={session.EcdhShared != null}, KeyMsg={session.KeyMsg != null}, AudioFormat={session.AudioFormat}");
+            DebugSessionLog.WriteLine($"[DEBUG-D] Session loaded: AesKey={session.AesKey != null}, AesIv={session.AesIv != null}, EcdhShared={session.EcdhShared != null}, KeyMsg={session.KeyMsg != null}, AudioFormat={session.AudioFormat}");
 
             // If we have not decripted session AesKey
             if (session.DecryptedAesKey == null)
@@ -238,12 +255,12 @@ namespace AirPlay.Listeners
                 byte[] decryptedAesKey = new byte[16];
                 _omgHax.DecryptAesKey(session.KeyMsg, session.AesKey, decryptedAesKey);
                 session.DecryptedAesKey = decryptedAesKey;
-                Console.WriteLine("[DEBUG-D] AES key decrypted");
+                DebugSessionLog.WriteLine("[DEBUG-D] AES key decrypted");
             }
 
             // Initialize decoder
             InitializeDecoder(session);
-            Console.WriteLine($"[DEBUG-D] Decoder initialized: type={_decoder?.Type}, outputLen={_decoder?.GetOutputStreamLength()}");
+            DebugSessionLog.WriteLine($"[DEBUG-D] Decoder initialized: type={_decoder?.Type}, outputLen={_decoder?.GetOutputStreamLength()}");
 
             await SessionManager.Current.CreateOrUpdateSessionAsync(_sessionId, session);
 
@@ -255,7 +272,7 @@ namespace AirPlay.Listeners
             int dSocketErrors = 0;
             string exitReason = "loop-end";
 
-            Console.WriteLine("[DEBUG-D] Entering receive loop...");
+            DebugSessionLog.WriteLine("[DEBUG-D] Entering receive loop...");
 
             do
             {
@@ -265,20 +282,37 @@ namespace AirPlay.Listeners
                     if (error != SocketError.Success)
                     {
                         dSocketErrors++;
+#if DEBUG
+                        var n = Interlocked.Increment(ref DebugSessionLog.DErrors);
+                        if (n == 1 || n == 1000 || n == 100000)
+                            DebugSessionLog.Write("H2", "AudioListener.cs:OnRawDSocketAsync", "D receive error", new { n, error = error.ToString(), packets = dPacketCount });
+#endif
                         if (dSocketErrors <= 5)
-                            Console.WriteLine($"[DEBUG-D] Socket.Receive error: {error}");
+                            DebugSessionLog.WriteLine($"[DEBUG-D] Socket.Receive error: {error}");
                         continue;
                     }
 
+                    if (dret == 0)
+                    {
+#if DEBUG
+                        var n = Interlocked.Increment(ref DebugSessionLog.DZeroReads);
+                        if (n == 1 || n == 1000 || n == 100000)
+                            DebugSessionLog.Write("H1", "AudioListener.cs:OnRawDSocketAsync", "D zero-byte receive", new { n, packets = dPacketCount });
+#endif
+                    }
+
                     dPacketCount++;
+#if DEBUG
+                    DebugSessionLog.DPackets = dPacketCount;
+#endif
                     if (dPacketCount == 1)
-                        Console.WriteLine($"[DEBUG-D] First packet received! size={dret}");
+                        DebugSessionLog.WriteLine($"[DEBUG-D] First packet received! size={dret}");
 
                     // RTP payload type
                     int type_d = packet[1] & ~0x80;
 
                     if (dPacketCount <= 3)
-                        Console.WriteLine($"[DEBUG-D] Packet #{dPacketCount}: type=0x{type_d:X2}, size={dret}");
+                        DebugSessionLog.WriteLine($"[DEBUG-D] Packet #{dPacketCount}: type=0x{type_d:X2}, size={dret}");
 
                     if (packet.Length >= 12)
                     {
@@ -297,7 +331,7 @@ namespace AirPlay.Listeners
                         }
 
                         if (dPacketCount <= 3)
-                            Console.WriteLine($"[DEBUG-D] RaopBufferQueue returned: {buf_ret}");
+                            DebugSessionLog.WriteLine($"[DEBUG-D] RaopBufferQueue returned: {buf_ret}");
 
                         if (buf_ret > 0) dQueuedCount++;
 
@@ -322,7 +356,7 @@ namespace AirPlay.Listeners
                         }
 
                         if (dPacketCount <= 3 && pcmBatch.Count > 0)
-                            Console.WriteLine($"[DEBUG-D] Dequeued {pcmBatch.Count} PCM frames, first len={pcmBatch[0].Length}");
+                            DebugSessionLog.WriteLine($"[DEBUG-D] Dequeued {pcmBatch.Count} PCM frames, first len={pcmBatch[0].Length}");
 
                         // Deliver PCM outside the lock to avoid blocking the control handler
                         foreach (var pcm in pcmBatch)
@@ -341,7 +375,7 @@ namespace AirPlay.Listeners
                     // Log summary periodically
                     if (dPacketCount % 500 == 0)
                     {
-                        Console.WriteLine($"[DEBUG-D] Stats: packets={dPacketCount}, queued={dQueuedCount}, dequeued={dDequeuedCount}, pcmDelivered={dPcmDelivered}, socketErrors={dSocketErrors}");
+                        DebugSessionLog.WriteLine($"[DEBUG-D] Stats: packets={dPacketCount}, queued={dQueuedCount}, dequeued={dDequeuedCount}, pcmDelivered={dPcmDelivered}, socketErrors={dSocketErrors}");
                     }
 
                     Array.Clear(packet, 0, packet.Length);
@@ -358,21 +392,21 @@ namespace AirPlay.Listeners
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[DEBUG-D] Exception in receive loop: {ex.GetType().Name}: {ex.Message}");
-                    Console.WriteLine($"[DEBUG-D] Stack trace: {ex.StackTrace}");
+                    DebugSessionLog.WriteLine($"[DEBUG-D] Exception in receive loop: {ex.GetType().Name}: {ex.Message}");
+                    DebugSessionLog.WriteLine($"[DEBUG-D] Stack trace: {ex.StackTrace}");
                 }
             } while (!cancellationToken.IsCancellationRequested);
 
             if (cancellationToken.IsCancellationRequested)
                 exitReason = "CancellationToken requested";
 
-            Console.WriteLine($"[DEBUG-D] Closing audio data socket. Reason: {exitReason}");
-            Console.WriteLine($"[DEBUG-D] Final stats: packets={dPacketCount}, queued={dQueuedCount}, dequeued={dDequeuedCount}, pcmDelivered={dPcmDelivered}, socketErrors={dSocketErrors}");
+            DebugSessionLog.WriteLine($"[DEBUG-D] Closing audio data socket. Reason: {exitReason}");
+            DebugSessionLog.WriteLine($"[DEBUG-D] Final stats: packets={dPacketCount}, queued={dQueuedCount}, dequeued={dDequeuedCount}, pcmDelivered={dPcmDelivered}, socketErrors={dSocketErrors}");
         }
 
         public Task FlushAsync(int nextSequence)
         {
-            Console.WriteLine($"[DEBUG-FLUSH] FlushAsync called: nextSequence={nextSequence}, isMirroring={_isMirroring}");
+            DebugSessionLog.WriteLine($"[DEBUG-FLUSH] FlushAsync called: nextSequence={nextSequence}, isMirroring={_isMirroring}");
             lock (_bufferLock)
             {
                 RaopBufferFlush(_raopBuffer, nextSequence);
@@ -429,7 +463,7 @@ namespace AirPlay.Listeners
             if (datalen < 12 || datalen > RAOP_PACKET_LENGTH)
             {
                 if (_queueCallCount <= 5)
-                    Console.WriteLine($"[DEBUG-QUEUE] #{_queueCallCount}: REJECT invalid length={datalen}");
+                    DebugSessionLog.WriteLine($"[DEBUG-QUEUE] #{_queueCallCount}: REJECT invalid length={datalen}");
                 return -1;
             }
 
@@ -437,18 +471,18 @@ namespace AirPlay.Listeners
             if (datalen == 16 && data[12] == 0x0 && data[13] == 0x68 && data[14] == 0x34 && data[15] == 0x0)
             {
                 if (_queueCallCount <= 5)
-                    Console.WriteLine($"[DEBUG-QUEUE] #{_queueCallCount}: no-data marker, seqnum={seqnum}");
+                    DebugSessionLog.WriteLine($"[DEBUG-QUEUE] #{_queueCallCount}: no-data marker, seqnum={seqnum}");
                 return 0;
             }
 
             if (_queueCallCount <= 10 || _queueCallCount % 500 == 0)
-                Console.WriteLine($"[DEBUG-QUEUE] #{_queueCallCount}: seqnum={seqnum}, datalen={datalen}, payloadSize={datalen - 12}, bufferEmpty={raop_buffer.IsEmpty}, firstSeq={raop_buffer.FirstSeqNum}, lastSeq={raop_buffer.LastSeqNum}");
+                DebugSessionLog.WriteLine($"[DEBUG-QUEUE] #{_queueCallCount}: seqnum={seqnum}, datalen={datalen}, payloadSize={datalen - 12}, bufferEmpty={raop_buffer.IsEmpty}, firstSeq={raop_buffer.FirstSeqNum}, lastSeq={raop_buffer.LastSeqNum}");
 
             // Ignore, old (use wraparound-aware comparison for 16-bit sequence numbers)
             if (!raop_buffer.IsEmpty && SeqBefore(seqnum, raop_buffer.FirstSeqNum))
             {
                 if (_queueCallCount <= 10)
-                    Console.WriteLine($"[DEBUG-QUEUE] #{_queueCallCount}: SKIP old seqnum={seqnum} < firstSeqNum={raop_buffer.FirstSeqNum}");
+                    DebugSessionLog.WriteLine($"[DEBUG-QUEUE] #{_queueCallCount}: SKIP old seqnum={seqnum} < firstSeqNum={raop_buffer.FirstSeqNum}");
                 return 0;
             }
 
@@ -500,7 +534,7 @@ namespace AirPlay.Listeners
                 var hexDump = raw.Length >= 16 
                     ? BitConverter.ToString(raw, 0, Math.Min(16, raw.Length)) 
                     : BitConverter.ToString(raw);
-                Console.WriteLine($"[DEBUG-DECRYPT] #{_queueCallCount}: raw[0]=0x{raw[0]:X2}, len={raw.Length}, first16={hexDump}");
+                DebugSessionLog.WriteLine($"[DEBUG-DECRYPT] #{_queueCallCount}: raw[0]=0x{raw[0]:X2}, len={raw.Length}, first16={hexDump}");
             }
             var length = _decoder.GetOutputStreamLength();
             var output = new byte[length];
@@ -510,7 +544,7 @@ namespace AirPlay.Listeners
             {
                 output = new byte[length];
                 if (_queueCallCount <= 10 || _queueCallCount % 200 == 0)
-                    Console.WriteLine($"[DEBUG-DECODE] #{_queueCallCount}: ERROR decoder={_decoder.Type}, code=0x{res:X} ({res}), inputLen={raw.Length}, outputLen={length}");
+                    DebugSessionLog.WriteLine($"[DEBUG-DECODE] #{_queueCallCount}: ERROR decoder={_decoder.Type}, code=0x{res:X} ({res}), inputLen={raw.Length}, outputLen={length}");
             }
             else
             {
@@ -522,7 +556,7 @@ namespace AirPlay.Listeners
                     {
                         if (output[i] != 0) { isSilence = false; break; }
                     }
-                    Console.WriteLine($"[DEBUG-DECODE] #{_queueCallCount}: OK decoder={_decoder.Type}, inputLen={raw.Length}, outputLen={length}, silence={isSilence}");
+                    DebugSessionLog.WriteLine($"[DEBUG-DECODE] #{_queueCallCount}: OK decoder={_decoder.Type}, inputLen={raw.Length}, outputLen={length}, silence={isSilence}");
                 }
             }
 
@@ -752,22 +786,22 @@ namespace AirPlay.Listeners
                         if (ret == 0)
                         {
                             _decoder = nativeDecoder;
-                            Console.WriteLine("[DEBUG] Using native FDK-AAC decoder for AAC-ELD");
+                            DebugSessionLog.WriteLine("[DEBUG] Using native FDK-AAC decoder for AAC-ELD");
                         }
                         else
                         {
-                            Console.WriteLine($"[DEBUG] Native FDK-AAC config error: 0x{ret:X}, trying FFmpeg...");
+                            DebugSessionLog.WriteLine($"[DEBUG] Native FDK-AAC config error: 0x{ret:X}, trying FFmpeg...");
                             nativeDecoder.Dispose();
                         }
                     }
                     catch (DllNotFoundException ex)
                     {
-                        Console.WriteLine($"[DEBUG] Native FDK-AAC library not found: {ex.Message}");
-                        Console.WriteLine("[DEBUG] To use native decoder, place libfdk-aac-2.dll (Windows) or libfdk-aac.so.2 (Linux) in app directory");
+                        DebugSessionLog.WriteLine($"[DEBUG] Native FDK-AAC library not found: {ex.Message}");
+                        DebugSessionLog.WriteLine("[DEBUG] To use native decoder, place libfdk-aac-2.dll (Windows) or libfdk-aac.so.2 (Linux) in app directory");
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"[DEBUG] Native FDK-AAC failed: {ex.GetType().Name}: {ex.Message}");
+                        DebugSessionLog.WriteLine($"[DEBUG] Native FDK-AAC failed: {ex.GetType().Name}: {ex.Message}");
                     }
 
                     // Try 2: FFmpeg subprocess with LOAS wrapping
@@ -780,11 +814,11 @@ namespace AirPlay.Listeners
                             if (ret == 0)
                             {
                                 _decoder = ffmpegDecoder;
-                                Console.WriteLine("[DEBUG] Using FFmpeg subprocess decoder for AAC-ELD");
+                                DebugSessionLog.WriteLine("[DEBUG] Using FFmpeg subprocess decoder for AAC-ELD");
                             }
                             else
                             {
-                                Console.WriteLine($"[DEBUG] FFmpeg decoder config failed (error {ret}), falling back to SharpJaad AAC-LC");
+                                DebugSessionLog.WriteLine($"[DEBUG] FFmpeg decoder config failed (error {ret}), falling back to SharpJaad AAC-LC");
                                 ffmpegDecoder.Dispose();
                                 _decoder = new AACDecoder(TransportType.TT_MP4_RAW, AudioObjectType.AOT_AAC_LC, 1);
                                 _decoder.Config(sampleRate, numChannels, bitDepth, frameLength);
@@ -792,7 +826,7 @@ namespace AirPlay.Listeners
                         }
                         catch (Exception ex)
                         {
-                            Console.WriteLine($"[DEBUG] FFmpeg decoder unavailable ({ex.Message}), falling back to SharpJaad AAC-LC");
+                            DebugSessionLog.WriteLine($"[DEBUG] FFmpeg decoder unavailable ({ex.Message}), falling back to SharpJaad AAC-LC");
                             _decoder = new AACDecoder(TransportType.TT_MP4_RAW, AudioObjectType.AOT_AAC_LC, 1);
                             _decoder.Config(sampleRate, numChannels, bitDepth, frameLength);
                         }

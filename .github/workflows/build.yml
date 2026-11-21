@@ -3,9 +3,20 @@ name: Build and Test
 on:
   push:
     branches: [ main, master, develop ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main, master, develop ]
   workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (用于产物命名, 如 v1.0.0.2)'
+        required: false
+        default: 'dev'
+      release:
+        description: '是否创建 GitHub Release（标签需已存在）'
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   build:
@@ -20,7 +31,7 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '8.0.x'
+        dotnet-version: '10.0.x'
         
     - name: Restore dependencies
       run: dotnet restore AirPlay.sln
@@ -29,78 +40,105 @@ jobs:
       run: dotnet build AirPlay.sln --configuration Release --no-restore
       
     - name: Publish
-      run: dotnet publish AirPlay/AirPlay.csproj --configuration Release --runtime win-x64 --self-contained true --output ./publish/win-x64
+      shell: pwsh
+      run: |
+        $version = "${{ inputs.version }}"
+        if ([string]::IsNullOrWhiteSpace($version)) { $version = 'dev' }
+        dotnet publish AirPlay/AirPlay.csproj --configuration Release --runtime win-x64 --self-contained true --output ./publish/win-x64 -p:InformationalVersion="$version"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        Set-Content -Path ./publish/win-x64/version.txt -Value $version -Encoding utf8
 
     - name: Cache FFmpeg
       id: cache-ffmpeg
       uses: actions/cache@v4
       with:
         path: ffmpeg-cache
-        key: ffmpeg-win64-gpl-v1
+        key: ffmpeg-win64-gpl-shared-v1
 
     - name: Download FFmpeg
       if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
       shell: pwsh
       run: |
-        $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+        # 共享版：编解码器在 av*.dll / sw*.dll 里，exe 很小，与本地分发包结构一致
+        $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip"
         Invoke-WebRequest -Uri $ffmpegUrl -OutFile ffmpeg.zip
         Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg-tmp
         $binDir = Get-ChildItem -Path ffmpeg-tmp -Recurse -Directory -Filter "bin" | Select-Object -First 1
         New-Item -ItemType Directory -Force -Path ffmpeg-cache
         Copy-Item "$($binDir.FullName)\ffmpeg.exe" -Destination ffmpeg-cache/
         Copy-Item "$($binDir.FullName)\ffplay.exe" -Destination ffmpeg-cache/
+        Get-ChildItem -Path $binDir.FullName -Filter *.dll -File | Copy-Item -Destination ffmpeg-cache/
 
     - name: Copy FFmpeg to publish
       shell: pwsh
       run: |
         Copy-Item "ffmpeg-cache\ffmpeg.exe" -Destination ./publish/win-x64/
         Copy-Item "ffmpeg-cache\ffplay.exe" -Destination ./publish/win-x64/
+        Copy-Item "ffmpeg-cache\*.dll" -Destination ./publish/win-x64/
+        $dllCount = (Get-ChildItem ./publish/win-x64 -Filter *.dll -File | Where-Object { $_.Name -match '^(av|sw)' }).Count
+        Write-Host "FFmpeg 运行库: $dllCount 个 dll"
+        if ($dllCount -lt 5) { throw "FFmpeg 共享库缺失（$dllCount 个），ffplay 无法启动" }
 
-    - name: Cache libfdk-aac
-      id: cache-fdkaac
-      uses: actions/cache@v4
-      with:
-        path: fdkaac-cache
-        key: fdkaac-win64-v1
-
-    - name: Build libfdk-aac from source
-      if: steps.cache-fdkaac.outputs.cache-hit != 'true'
-      shell: bash
+    - name: Trim publish output
+      shell: pwsh
       run: |
-        # Build FDK-AAC from official source using MSYS2 (pre-installed on windows-latest)
-        export MSYSTEM=MINGW64
-        export PATH="/c/msys64/mingw64/bin:/c/msys64/usr/bin:$PATH"
+        # 与本地打包脚本对齐：剔除调试符号、非 Windows 配置、多余语言资源、Linux 原生库
+        $root = './publish/win-x64'
+        Get-ChildItem -LiteralPath $root -Filter *.pdb -File | Remove-Item -Force
+        Get-ChildItem -LiteralPath $root -Filter *.log -File | Remove-Item -Force
+        foreach ($name in @('appsettings_linux.json', 'appsettings_osx.json')) {
+            $path = Join-Path $root $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+        }
+        $dirs = @('cs', 'de', 'es', 'fr', 'it', 'ja', 'ko', 'pl', 'pt-BR', 'ru', 'tr', 'zh-Hans', 'zh-Hant', 'runtimes', 'Logs')
+        foreach ($name in $dirs) {
+            $path = Join-Path $root $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+        }
 
-        # Install build dependencies
-        pacman -S --noconfirm --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake make
-
-        # Clone and build fdk-aac
-        git clone --depth 1 https://github.com/mstorsjo/fdk-aac.git fdk-aac-src
-        cd fdk-aac-src
-
-        # Use CMake for a simpler build
-        mkdir build && cd build
-        cmake -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON ..
-        cmake --build . --config Release
-
-        # Find and copy the DLL to cache
-        echo "Built files:"
-        find . -name "*.dll" -type f
-        DLL_PATH=$(find . -name "fdk-aac*.dll" -o -name "libfdk-aac*.dll" | head -1)
-        if [ -z "$DLL_PATH" ]; then
-          echo "ERROR: No FDK-AAC DLL found after build"
-          exit 1
-        fi
-        mkdir -p ../../fdkaac-cache
-        cp -v "$DLL_PATH" ../../fdkaac-cache/libfdk-aac-2.dll
-        echo "Successfully built and cached libfdk-aac-2.dll"
-
-    - name: Copy libfdk-aac to publish
-      shell: bash
-      run: cp -v fdkaac-cache/libfdk-aac-2.dll publish/win-x64/libfdk-aac-2.dll
+    - name: Verify package files
+      shell: pwsh
+      run: |
+        # libfdk-aac-2.dll 随源码放在 AirPlay/native/，由 csproj 自动复制到发布输出
+        $required = @('AirPlay.exe', 'libfdk-aac-2.dll', 'ffplay.exe', 'ffmpeg.exe', 'appsettings_win.json')
+        $missing = $required | Where-Object { -not (Test-Path -LiteralPath "./publish/win-x64/$_") }
+        if ($missing) { throw "发布目录缺少文件: $($missing -join ', ')" }
+        Get-ChildItem ./publish/win-x64 -Filter *.dll | Measure-Object -Property Length -Sum |
+            ForEach-Object { "publish 大小: {0:N1} MB / {1} 个 dll" -f ($_.Sum / 1MB), $_.Count }
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: AirPlay-win-x64
+        name: AirPlay-win-x64-${{ inputs.version || github.ref_name }}
         path: ./publish/win-x64/
+
+  # 分支/tag 推送只上传制品；创建 Release 由 release 输入或 v* 标签触发
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      PKG_VERSION: ${{ inputs.version || github.ref_name }}
+
+    steps:
+    - name: Download build artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: AirPlay-win-x64-${{ inputs.version || github.ref_name }}
+        path: pkg
+
+    - name: Pack zip
+      run: |
+        cd pkg
+        zip -r "../AirPlay-win-x64-${PKG_VERSION}.zip" .
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ env.PKG_VERSION }}
+        name: ${{ env.PKG_VERSION }}
+        target_commitish: ${{ github.sha }}
+        files: AirPlay-win-x64-${{ env.PKG_VERSION }}.zip
+        generate_release_notes: true

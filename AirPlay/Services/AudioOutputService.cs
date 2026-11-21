@@ -1,7 +1,9 @@
 using NAudio.Wave;
 using System;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
+using AirPlay.Utils;
 
 namespace AirPlay.Services
 {
@@ -192,13 +194,13 @@ namespace AirPlay.Services
                         {
                             if (buffer[i] != 0) { allZeros = false; break; }
                         }
-                        Console.WriteLine($"[DEBUG-AUDIO] AddSamples #{_sampleCount}: count={count}, allZeros={allZeros}, queue={_streamProvider.QueuedBuffers}, initialized={_initialized}, playing={_isPlaying}");
+                        DebugSessionLog.WriteLine($"[DEBUG-AUDIO] AddSamples #{_sampleCount}: count={count}, allZeros={allZeros}, queue={_streamProvider.QueuedBuffers}, initialized={_initialized}, playing={_isPlaying}");
                     }
 
                     // Initialize DirectSound AFTER prebuffering
                     if (!_initialized && _sampleCount >= PREBUFFER_PACKETS)
                     {
-                        Console.WriteLine($"[DEBUG-AUDIO] Prebuffered {_streamProvider.QueuedBuffers} packets, calling Init()...");
+                        DebugSessionLog.WriteLine($"[DEBUG-AUDIO] Prebuffered {_streamProvider.QueuedBuffers} packets, calling Init()...");
                         _waveOut.Init(_streamProvider);
                         _initialized = true;
                     }
@@ -208,7 +210,7 @@ namespace AirPlay.Services
                     {
                         _waveOut.Play();
                         _isPlaying = true;
-                        Console.WriteLine($"[DEBUG-AUDIO] Audio playback started ({_streamProvider.QueuedBuffers} packets buffered)");
+                        DebugSessionLog.WriteLine($"[DEBUG-AUDIO] Audio playback started ({_streamProvider.QueuedBuffers} packets buffered)");
                     }
 
                     // Log status periodically
@@ -216,70 +218,52 @@ namespace AirPlay.Services
                     {
                         var state = _waveOut.PlaybackState;
                         var queued = _streamProvider.QueuedBuffers;
-                        Console.WriteLine($"[DEBUG-AUDIO] Audio: {_sampleCount} packets | Queue: {queued} | State: {state}");
+                        DebugSessionLog.WriteLine($"[DEBUG-AUDIO] Audio: {_sampleCount} packets | Queue: {queued} | State: {state}");
                     }
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[DEBUG-AUDIO] Audio error in AddSamples: {ex.GetType().Name}: {ex.Message}");
-                }
-            }
-        }
-
-        /// <summary>
-        /// Recreate the audio output after an error.
-        /// </summary>
-        public void Recreate()
-        {
-            lock (_lock)
-            {
-                Console.WriteLine("Recreating audio output...");
-
-                try
-                {
-                    _waveOut?.Dispose();
-                }
-                catch { }
-
-                Thread.Sleep(COM_CLEANUP_DELAY_MS);
-
-                try
-                {
-                    _streamProvider?.Clear();
-                    _waveOut = new DirectSoundOut(40);
-                    _waveOut.PlaybackStopped += OnPlaybackStopped;
-                    _initialized = false;
-                    _isPlaying = false;
-                    _sampleCount = 0;
-                    _needsReinit = false;
-                    Console.WriteLine("Audio output recreated successfully");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Failed to recreate audio output: {ex.Message}");
+                    DebugSessionLog.WriteLine($"[DEBUG-AUDIO] Audio error in AddSamples: {ex.GetType().Name}: {ex.Message}");
                 }
             }
         }
 
         public void Dispose()
         {
+            var stopwatch = Stopwatch.StartNew();
+            DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "waiting lock", new { thread = Environment.CurrentManagedThreadId });
             lock (_lock)
             {
-                if (_disposed) return;
+                DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "lock acquired", null);
+                if (_disposed)
+                {
+                    DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "already disposed", null);
+                    return;
+                }
                 _disposed = true;
 
                 try
                 {
+                    DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "waveOut.Stop enter", new { hasWaveOut = _waveOut != null });
                     _waveOut?.Stop();
+                    DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "waveOut.Stop exit", null);
+                    DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "waveOut.Dispose enter", null);
                     _waveOut?.Dispose();
+                    DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "waveOut.Dispose exit", null);
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "waveOut cleanup failed", new { error = ex.GetType().Name, message = ex.Message });
+                }
 
+                DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "streamProvider.Clear enter", null);
                 _streamProvider?.Clear();
+                DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "streamProvider.Clear exit", null);
                 _waveOut = null;
                 _streamProvider = null;
 
                 Console.WriteLine($"Audio disposed (played {_sampleCount} packets total)");
+                DebugSessionLog.Write("H6", "AudioOutputService.Dispose", "dispose completed", new { elapsedMs = stopwatch.ElapsedMilliseconds });
             }
         }
     }

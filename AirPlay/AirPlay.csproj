@@ -2,10 +2,20 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <RollForward>LatestMajor</RollForward>
-    <NoWarn>$(NoWarn);SYSLIB0011;SYSLIB0050</NoWarn>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Nullable>annotations</Nullable>
+    <!-- NU1701/NU1903：curve25519-pcl 依赖链只有 .NET Framework 目标包，运行时不加载其传递依赖，
+         无法通过升级消除，故仅屏蔽还原告警。 -->
+    <NoWarn>$(NoWarn);SYSLIB0011;SYSLIB0050;NU1701;NU1903</NoWarn>
     <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
+    <StartupObject>AirPlay.Program</StartupObject>
+    <!-- 软件版本号：同时决定 exe 的「文件版本 / 产品版本」和分发包名 -->
+    <Version>1.0.0.4</Version>
+  </PropertyGroup>
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    <ApplicationIcon>Resources\airplay.ico</ApplicationIcon>
   </PropertyGroup>
 
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
@@ -16,6 +26,23 @@
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    <OutputType>WinExe</OutputType>
+    <DefineConstants>$(DefineConstants);USE_WINDOWS_TRAY</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
+    <!-- WinForms 托盘/投屏窗口代码只在 Windows 下编译，整个程序集标注为 Windows 平台，
+         避免 CA1416 对每个 WinForms 调用点报警。 -->
+    <AssemblyAttribute Include="System.Runtime.Versioning.SupportedOSPlatformAttribute">
+      <_Parameter1>windows</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>AirPlay.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="curve25519-pcl" Version="1.0.1" />
     <PackageReference Include="LibALAC" Version="1.0.7" />
@@ -76,7 +103,18 @@
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+  <!-- 原生 AAC-ELD 解码库：代码用 DllImport("libfdk-aac-2") 按名加载，
+       Link 让它平铺到 exe 同级，否则会按 native\ 相对路径拷贝而找不到。 -->
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    <None Update="native\libfdk-aac-2.dll">
+      <Link>libfdk-aac-2.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
   <ItemGroup>
+    <None Include="Resources\tv_airplay_line.svg" />
+    <EmbeddedResource Include="Resources\airplay.ico" />
     <EmbeddedResource Include="Resources\table_s1.bin" />
     <EmbeddedResource Include="Resources\table_s10.bin" />
     <EmbeddedResource Include="Resources\table_s2.bin" />

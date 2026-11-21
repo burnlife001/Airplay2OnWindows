@@ -7,11 +7,6 @@ namespace AirPlay.Utils
 {
     public static class Extensions
     {
-        public static string BytesToHex(this byte[] data)
-        {
-            return string.Join(string.Empty, data.Select(s => s.ToString("X2")));
-        }
-
         public static byte[] HexToBytes(this string hex)
         {
             byte[] data = new byte[hex.Length / 2];
@@ -35,11 +30,6 @@ namespace AirPlay.Utils
             return BitConverter.ToUInt16(binRdr.ReadBytesRequired(sizeof(UInt16)).Reverse(), 0);
         }
 
-        public static Int16 ReadInt16BE(this BinaryReader binRdr)
-        {
-            return BitConverter.ToInt16(binRdr.ReadBytesRequired(sizeof(Int16)).Reverse(), 0);
-        }
-
         public static UInt32 ReadUInt32BE(this BinaryReader binRdr)
         {
             return BitConverter.ToUInt32(binRdr.ReadBytesRequired(sizeof(UInt32)).Reverse(), 0);
@@ -53,11 +43,6 @@ namespace AirPlay.Utils
         public static UInt64 ReadUInt64BE(this BinaryReader binRdr)
         {
             return BitConverter.ToUInt64(binRdr.ReadBytesRequired(sizeof(UInt64)).Reverse(), 0);
-        }
-
-        public static Int64 ReadInt64BE(this BinaryReader binRdr)
-        {
-            return BitConverter.ToInt64(binRdr.ReadBytesRequired(sizeof(Int64)).Reverse(), 0);
         }
 
         public static byte[] ReadBytesRequired(this BinaryReader binRdr, int byteCount)

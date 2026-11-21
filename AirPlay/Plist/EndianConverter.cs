@@ -13,7 +13,6 @@ namespace System.Runtime.Serialization.Plists
     /// <summary>
     /// Converts the endian-ness of primitive number types.
     /// </summary>
-    [CLSCompliant(false)]
     public static class EndianConverter
     {
         /// <summary>
@@ -230,102 +229,6 @@ namespace System.Runtime.Serialization.Plists
             }
 
             return value;
-        }
-
-        /// <summary>
-        /// Gets the little-endian value of the given value if the current system is big-endian.
-        /// If the current system is little-endian, returns the value as-is.
-        /// </summary>
-        /// <param name="value">The value to swap if necessary.</param>
-        /// <returns>The resulting value.</returns>
-        public static ushort ToLittleEndianConditional(this ushort value)
-        {
-            if (BitConverter.IsLittleEndian)
-            {
-                return value;
-            }
-
-            return value.SwapEndian();
-        }
-
-        /// <summary>
-        /// Gets the little-endian value of the given value if the current system is big-endian.
-        /// If the current system is little-endian, returns the value as-is.
-        /// </summary>
-        /// <param name="value">The value to swap if necessary.</param>
-        /// <returns>The resulting value.</returns>
-        public static short ToLittleEndianConditional(this short value)
-        {
-            if (BitConverter.IsLittleEndian)
-            {
-                return value;
-            }
-
-            return value.SwapEndian();
-        }
-
-        /// <summary>
-        /// Gets the little-endian value of the given value if the current system is big-endian.
-        /// If the current system is little-endian, returns the value as-is.
-        /// </summary>
-        /// <param name="value">The value to swap if necessary.</param>
-        /// <returns>The resulting value.</returns>
-        public static uint ToLittleEndianConditional(this uint value)
-        {
-            if (BitConverter.IsLittleEndian)
-            {
-                return value;
-            }
-
-            return value.SwapEndian();
-        }
-
-        /// <summary>
-        /// Gets the little-endian value of the given value if the current system is big-endian.
-        /// If the current system is little-endian, returns the value as-is.
-        /// </summary>
-        /// <param name="value">The value to swap if necessary.</param>
-        /// <returns>The resulting value.</returns>
-        public static int ToLittleEndianConditional(this int value)
-        {
-            if (BitConverter.IsLittleEndian)
-            {
-                return value;
-            }
-
-            return value.SwapEndian();
-        }
-
-        /// <summary>
-        /// Gets the little-endian value of the given value if the current system is big-endian.
-        /// If the current system is little-endian, returns the value as-is.
-        /// </summary>
-        /// <param name="value">The value to swap if necessary.</param>
-        /// <returns>The resulting value.</returns>
-        public static ulong ToLittleEndianConditional(this ulong value)
-        {
-            if (BitConverter.IsLittleEndian)
-            {
-                return value;
-            }
-
-            return value.SwapEndian();
-        }
-
-        /// <summary>
-        /// Gets the little-endian value of the given value if the current system is big-endian.
-        /// If the current system is little-endian, returns the value as-is.
-        /// </summary>
-        /// <param name="value">The value to swap if necessary.</param>
-        /// <returns>The resulting value.</returns>
-        public static long ToLittleEndianConditional(this long value)
-        {
-            if (BitConverter.IsLittleEndian)
-            {
-                return value;
-            }
-
-            return value.SwapEndian();
         }
     }
 }
